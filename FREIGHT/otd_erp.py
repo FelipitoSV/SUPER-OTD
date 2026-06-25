@@ -54,6 +54,8 @@ run_auto_backup()
 # --- 3. GLOBALES ---
 if 'menu_actual' not in st.session_state: st.session_state.menu_actual = "OPERACIONES"
 if 'admin_unlocked' not in st.session_state: st.session_state.admin_unlocked = False
+if 'db_connection_error' not in st.session_state: st.session_state.db_connection_error = None
+if 'use_postgres_fallback' not in st.session_state: st.session_state.use_postgres_fallback = False
 
 # --- 4. CSS ---
 BACKGROUND_URL = "https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=2072&auto=format&fit=crop"
@@ -106,10 +108,27 @@ st.markdown(f"""
 # --- 5. DB & HELPERS ---
 import psycopg2
 
+def check_is_postgres():
+    return "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"] and not st.session_state.get("use_postgres_fallback", False)
+
 def get_connection():
     is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
-    if is_postgres:
-        return psycopg2.connect(st.secrets["postgres_url"])
+    if is_postgres and not st.session_state.get("use_postgres_fallback", False):
+        try:
+            return psycopg2.connect(st.secrets["postgres_url"])
+        except Exception as e:
+            err_msg = str(e)
+            try:
+                import urllib.parse
+                url = st.secrets["postgres_url"]
+                parsed = urllib.parse.urlparse(url)
+                if parsed.password:
+                    err_msg = err_msg.replace(parsed.password, "****").replace(urllib.parse.quote_plus(parsed.password), "****")
+            except:
+                pass
+            st.session_state.db_connection_error = err_msg
+            st.session_state.use_postgres_fallback = True
+            return sqlite3.connect(DB_NAME)
     else:
         return sqlite3.connect(DB_NAME)
 
@@ -126,17 +145,17 @@ def translate_sqlite_to_postgres(query):
             if "select" in ql:
                 query = "INSERT INTO choferes (nombre) SELECT DISTINCT operador FROM flota WHERE operador IS NOT NULL AND operador != '' ON CONFLICT (nombre) DO NOTHING"
             else:
-                query = "INSERT INTO choferes (nombre, tipo) VALUES (%s, %s) ON CONFLICT (nombre) DO NOTHING"
+                query = "INSERT INTO choferes (nombre, tipo, disponible) VALUES (%s, %s, %s) ON CONFLICT (nombre) DO UPDATE SET tipo = EXCLUDED.tipo, disponible = EXCLUDED.disponible"
         elif "camiones" in ql:
             if "select" in ql:
                 query = "INSERT INTO camiones (tracto, placas) SELECT DISTINCT tracto, placas FROM flota WHERE tracto IS NOT NULL AND tracto != '' ON CONFLICT (tracto) DO NOTHING"
             else:
-                query = "INSERT INTO camiones (tracto, placas) VALUES (%s, %s) ON CONFLICT (tracto) DO NOTHING"
+                query = "INSERT INTO camiones (tracto, placas, disponible) VALUES (%s, %s, %s) ON CONFLICT (tracto) DO UPDATE SET placas = EXCLUDED.placas, disponible = EXCLUDED.disponible"
         elif "cajas" in ql:
             if "select" in ql:
                 query = "INSERT INTO cajas (caja) SELECT DISTINCT caja FROM panel WHERE caja IS NOT NULL AND caja != '' AND caja != 'N/A' ON CONFLICT (caja) DO NOTHING"
             else:
-                query = "INSERT INTO cajas (caja) VALUES (%s) ON CONFLICT (caja) DO NOTHING"
+                query = "INSERT INTO cajas (caja, disponible) VALUES (%s, %s) ON CONFLICT (caja) DO UPDATE SET disponible = EXCLUDED.disponible" 
         elif "cat_vencimientos" in ql:
             query = "INSERT INTO cat_vencimientos VALUES (%s) ON CONFLICT (tipo) DO NOTHING"
             
@@ -179,7 +198,7 @@ def get_local_now():
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=offset_hours)
 
 def run_query(query, params=()):
-    is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+    is_postgres = check_is_postgres()
     
     if is_postgres:
         query_translated = translate_sqlite_to_postgres(query)
@@ -219,7 +238,7 @@ def run_query(query, params=()):
             return False
 
 def check_col_exists(table, col):
-    is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+    is_postgres = check_is_postgres()
     if is_postgres:
         try:
             res = run_query("SELECT 1 FROM information_schema.columns WHERE table_name = ? AND column_name = ?", (table.lower(), col.lower()))
@@ -235,7 +254,7 @@ def check_col_exists(table, col):
         except: return False
 
 def init_db():
-    is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+    is_postgres = check_is_postgres()
     
     if is_postgres:
         run_query("""CREATE TABLE IF NOT EXISTS panel (
@@ -273,9 +292,9 @@ def init_db():
         run_query("INSERT OR IGNORE INTO notepad (id, contenido) VALUES (1, '')")
         
         # Nuevas tablas para conductores, camiones y cajas separados:
-        run_query("CREATE TABLE IF NOT EXISTS choferes (nombre TEXT PRIMARY KEY, tipo TEXT DEFAULT 'TRANSFER')")
-        run_query("CREATE TABLE IF NOT EXISTS camiones (tracto TEXT PRIMARY KEY, placas TEXT)")
-        run_query("CREATE TABLE IF NOT EXISTS cajas (caja TEXT PRIMARY KEY)")
+        run_query("CREATE TABLE IF NOT EXISTS choferes (nombre TEXT PRIMARY KEY, tipo TEXT DEFAULT 'TRANSFER', disponible TEXT DEFAULT 'SI')")
+        run_query("CREATE TABLE IF NOT EXISTS camiones (tracto TEXT PRIMARY KEY, placas TEXT, disponible TEXT DEFAULT 'SI')")
+        run_query("CREATE TABLE IF NOT EXISTS cajas (caja TEXT PRIMARY KEY, disponible TEXT DEFAULT 'SI')")
     else:
         run_query('''CREATE TABLE IF NOT EXISTS panel (fecha TEXT, movimiento TEXT, cliente TEXT, operador TEXT, tracto TEXT, caja TEXT, factura TEXT, folio_cp TEXT, bascula TEXT, costo_final REAL, moneda TEXT, ip_log TEXT, status_dia TEXT DEFAULT 'CONFIRMADO', ups TEXT, profepa TEXT, hora TEXT, carta_porte TEXT DEFAULT 'NO', manifiesto TEXT DEFAULT 'NO', destino TEXT DEFAULT '')''')
         run_query('''CREATE TABLE IF NOT EXISTS gastos (fecha TEXT, factura TEXT, tracto TEXT, caja TEXT, estado TEXT, operador TEXT, costo_cruce REAL, moneda TEXT)''')
@@ -298,9 +317,9 @@ def init_db():
         run_query("INSERT OR IGNORE INTO notepad (id, contenido) VALUES (1, '')")
         
         # Nuevas tablas para conductores, camiones y cajas separados:
-        run_query("CREATE TABLE IF NOT EXISTS choferes (nombre TEXT PRIMARY KEY, tipo TEXT DEFAULT 'TRANSFER')")
-        run_query("CREATE TABLE IF NOT EXISTS camiones (tracto TEXT PRIMARY KEY, placas TEXT)")
-        run_query("CREATE TABLE IF NOT EXISTS cajas (caja TEXT PRIMARY KEY)")
+        run_query("CREATE TABLE IF NOT EXISTS choferes (nombre TEXT PRIMARY KEY, tipo TEXT DEFAULT 'TRANSFER', disponible TEXT DEFAULT 'SI')")
+        run_query("CREATE TABLE IF NOT EXISTS camiones (tracto TEXT PRIMARY KEY, placas TEXT, disponible TEXT DEFAULT 'SI')")
+        run_query("CREATE TABLE IF NOT EXISTS cajas (caja TEXT PRIMARY KEY, disponible TEXT DEFAULT 'SI')")
         
     if not check_col_exists("choferes", "tipo"): run_query("ALTER TABLE choferes ADD COLUMN tipo TEXT DEFAULT 'TRANSFER'")
     run_query("UPDATE choferes SET tipo = 'B1' WHERE tipo = 'CARRETERO'")
@@ -317,6 +336,9 @@ def init_db():
         pass
     
     if not check_col_exists("flota", "placas"): run_query("ALTER TABLE flota ADD COLUMN placas TEXT")
+    if not check_col_exists("choferes", "disponible"): run_query("ALTER TABLE choferes ADD COLUMN disponible TEXT DEFAULT 'SI'")
+    if not check_col_exists("camiones", "disponible"): run_query("ALTER TABLE camiones ADD COLUMN disponible TEXT DEFAULT 'SI'")
+    if not check_col_exists("cajas", "disponible"): run_query("ALTER TABLE cajas ADD COLUMN disponible TEXT DEFAULT 'SI'")
     if not check_col_exists("panel", "ups"): run_query("ALTER TABLE panel ADD COLUMN ups TEXT")
     if not check_col_exists("panel", "profepa"): run_query("ALTER TABLE panel ADD COLUMN profepa TEXT")
     if not check_col_exists("panel", "hora"): run_query("ALTER TABLE panel ADD COLUMN hora TEXT")
@@ -418,7 +440,7 @@ def get_tc():
 def set_tc(valor): run_query("INSERT OR REPLACE INTO config (clave, valor) VALUES ('TC', ?)", (str(valor),))
 
 def cargar_dataframe(table, date_filter=None):
-    is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+    is_postgres = check_is_postgres()
     
     if is_postgres:
         query = f"SELECT * FROM {table}"
@@ -580,9 +602,18 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
         </style>
         """, unsafe_allow_html=True)
     
+    is_postgres = check_is_postgres()
+    if is_postgres:
+        db_status = '<span style="background-color: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #10b981; font-weight: bold; margin-left: 15px; vertical-align: middle;">☁️ BD: Nube</span>'
+    else:
+        db_status = '<span style="background-color: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #fca5a5; font-weight: bold; margin-left: 15px; vertical-align: middle;">⚠️ BD: SQLite Temporal</span>'
+
     c_title, c_date, c_refresh = st.columns([5, 3, 2])
     with c_title:
-        st.markdown("<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span></h2><style>@keyframes blink { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }</style>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span> {db_status}</h2><style>@keyframes blink {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}</style>", unsafe_allow_html=True)
+
+    if st.session_state.get("db_connection_error"):
+        st.error(f"⚠️ **Error conexión BD Nube:** {st.session_state.db_connection_error}")
     with c_date:
         tv_fecha = st.date_input("📅 Fecha Proyectada", value=get_local_now(), key="tv_only_fecha_input")
         tv_fecha_str = tv_fecha.strftime("%Y-%m-%d")
@@ -592,77 +623,207 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
         if refresh_rate == "1 minuto": refresh_seconds = 60
         elif refresh_rate == "5 minutos": refresh_seconds = 300
         elif refresh_rate == "Desactivado": refresh_seconds = None
-        
-    @st.fragment(run_every=refresh_seconds)
-    def render_tv_only_layout(fecha_filtro):
-        df_tv = cargar_dataframe("panel", fecha_filtro).rename(columns={'operador': 'chofer', 'tracto': 'camion'})
-        if not df_tv.empty:
-            st.markdown(
-                """
-                <div style="background: rgba(255, 255, 255, 0.05); color: #94a3b8; padding: 12px 18px; border-radius: 12px; display: flex; align-items: center; font-weight: bold; border: 1px solid rgba(255, 255, 255, 0.1); margin-bottom: 10px; font-size: 15px;">
-                    <div style="flex: 0.8;">HORA</div>
-                    <div style="flex: 1.5;">MOVIMIENTO</div>
-                    <div style="flex: 0.8;">CLIENTE</div>
-                    <div style="flex: 1.8;">FOLIO / FACTURA</div>
-                    <div style="flex: 2.5;">CHOFER</div>
-                    <div style="flex: 0.8;">CAMIÓN</div>
-                    <div style="flex: 0.8;">CAJA</div>
-                    <div style="flex: 2.2;">DESTINO</div>
-                    <div style="flex: 1.2; text-align: center;">DOCS</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            
-            for idx, row in df_tv.iterrows():
-                mov = str(row['movimiento']).upper()
-                
-                if "EXPORTACION" in mov:
-                    bg_color, text_color, border_color = "rgba(59, 130, 246, 0.15)", "#93c5fd", "rgba(59, 130, 246, 0.35)"
-                elif "IMPORTACION" in mov:
-                    bg_color, text_color, border_color = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                elif "TARIMAS" in mov:
-                    bg_color, text_color, border_color = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                else: # TRANSFER
-                    bg_color, text_color, border_color = "rgba(139, 92, 246, 0.15)", "#c084fc", "rgba(139, 92, 246, 0.35)"
-                
-                folio = str(row['folio_cp']) if row['folio_cp'] else ""
-                factura = str(row['factura']) if row['factura'] else ""
-                if folio and factura:
-                    folio_factura = f"{folio} / {factura}"
-                else:
-                    folio_factura = folio or factura or "-"
-                
-                cp_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold; margin-right:4px;'>📄 CP</span>" if row['carta_porte'] else ""
-                man_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold;'>📋 MAN</span>" if row['manifiesto'] else ""
-                docs_badges = f"{cp_badge} {man_badge}".strip() if (cp_badge or man_badge) else "<span style='color: #64748b; font-size:13px;'>-</span>"
-                
+
+    tab_tv_viajes, tab_tv_dispo = st.tabs(["📋 VIAJES DEL DÍA", "📊 DISPONIBILIDAD FLOTA"])
+    
+    with tab_tv_viajes:
+        @st.fragment(run_every=refresh_seconds)
+        def render_tv_only_layout(fecha_filtro):
+            df_tv = cargar_dataframe("panel", fecha_filtro).rename(columns={'operador': 'chofer', 'tracto': 'camion'})
+            if not df_tv.empty:
                 st.markdown(
-                    f"""
-                    <div style="background-color: {bg_color}; color: {text_color}; padding: 16px 20px; border-radius: 12px; border: 1px solid {border_color}; display: flex; align-items: center; min-height: 56px; margin-bottom: 10px; font-size: 16px;">
-                        <div style="flex: 0.8; font-weight: 500;">{row['hora']}</div>
-                        <div style="flex: 1.5; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">{mov}</div>
-                        <div style="flex: 0.8; font-weight: 600;">{row['cliente']}</div>
-                        <div style="flex: 1.8; font-family: monospace; font-size: 15px;">{folio_factura}</div>
-                        <div style="flex: 2.5; font-weight: 600; text-transform: uppercase;">{row['chofer']}</div>
-                        <div style="flex: 0.8; font-weight: bold;">{row['camion']}</div>
-                        <div style="flex: 0.8; font-weight: bold;">{row['caja']}</div>
-                        <div style="flex: 2.2; font-size: 15px;">{row['destino'] or ''}</div>
-                        <div style="flex: 1.2; display: flex; gap: 4px; justify-content: center; align-items: center;">{docs_badges}</div>
+                    """
+                    <div style="background: rgba(255, 255, 255, 0.05); color: #94a3b8; padding: 12px 18px; border-radius: 12px; display: flex; align-items: center; font-weight: bold; border: 1px solid rgba(255, 255, 255, 0.1); margin-bottom: 10px; font-size: 15px;">
+                        <div style="flex: 0.8;">HORA</div>
+                        <div style="flex: 1.5;">MOVIMIENTO</div>
+                        <div style="flex: 0.8;">CLIENTE</div>
+                        <div style="flex: 1.8;">FOLIO / FACTURA</div>
+                        <div style="flex: 2.5;">CHOFER</div>
+                        <div style="flex: 0.8;">CAMIÓN</div>
+                        <div style="flex: 0.8;">CAJA</div>
+                        <div style="flex: 2.2;">DESTINO</div>
+                        <div style="flex: 1.2; text-align: center;">DOCS</div>
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
-            st.caption(f"Última actualización automática: {get_local_now().strftime('%H:%M:%S')}")
-        else:
-            st.info(f"No hay registros de viajes para el {fecha_filtro}.")
+                
+                for idx, row in df_tv.iterrows():
+                    mov = str(row['movimiento']).upper()
+                    
+                    if "EXPORTACION" in mov:
+                        bg_color, text_color, border_color = "rgba(59, 130, 246, 0.15)", "#93c5fd", "rgba(59, 130, 246, 0.35)"
+                    elif "IMPORTACION" in mov:
+                        bg_color, text_color, border_color = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                    elif "TARIMAS" in mov:
+                        bg_color, text_color, border_color = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                    else: # TRANSFER
+                        bg_color, text_color, border_color = "rgba(139, 92, 246, 0.15)", "#c084fc", "rgba(139, 92, 246, 0.35)"
+                    
+                    folio = str(row['folio_cp']) if row['folio_cp'] else ""
+                    factura = str(row['factura']) if row['factura'] else ""
+                    if folio and factura:
+                        folio_factura = f"{folio} / {factura}"
+                    else:
+                        folio_factura = folio or factura or "-"
+                    
+                    cp_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold; margin-right:4px;'>📄 CP</span>" if row['carta_porte'] else ""
+                    man_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold;'>📋 MAN</span>" if row['manifiesto'] else ""
+                    docs_badges = f"{cp_badge} {man_badge}".strip() if (cp_badge or man_badge) else "<span style='color: #64748b; font-size:13px;'>-</span>"
+                    
+                    st.markdown(
+                        f"""
+                        <div style="background-color: {bg_color}; color: {text_color}; padding: 16px 20px; border-radius: 12px; border: 1px solid {border_color}; display: flex; align-items: center; min-height: 56px; margin-bottom: 10px; font-size: 16px;">
+                            <div style="flex: 0.8; font-weight: 500;">{row['hora']}</div>
+                            <div style="flex: 1.5; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">{mov}</div>
+                            <div style="flex: 0.8; font-weight: 600;">{row['cliente']}</div>
+                            <div style="flex: 1.8; font-family: monospace; font-size: 15px;">{folio_factura}</div>
+                            <div style="flex: 2.5; font-weight: 600; text-transform: uppercase;">{row['chofer']}</div>
+                            <div style="flex: 0.8; font-weight: bold;">{row['camion']}</div>
+                            <div style="flex: 0.8; font-weight: bold;">{row['caja']}</div>
+                            <div style="flex: 2.2; font-size: 15px;">{row['destino'] or ''}</div>
+                            <div style="flex: 1.2; display: flex; gap: 4px; justify-content: center; align-items: center;">{docs_badges}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                st.caption(f"Última actualización automática: {get_local_now().strftime('%H:%M:%S')}")
+            else:
+                st.info(f"No hay registros de viajes para el {fecha_filtro}.")
+                
+        render_tv_only_layout(tv_fecha_str)
+
+    with tab_tv_dispo:
+        @st.fragment(run_every=refresh_seconds)
+        def render_tv_disponibilidad():
+            col1, col2, col3 = st.columns(3)
             
-    render_tv_only_layout(tv_fecha_str)
+            # 1. Choferes
+            with col1:
+                st.markdown("#### 👥 Choferes")
+                df_ch = pd.read_sql_query("SELECT nombre, tipo, disponible FROM choferes ORDER BY nombre ASC", get_connection())
+                ocupados = get_ocupados_hoy()
+                if df_ch.empty:
+                    st.info("No hay choferes registrados.")
+                else:
+                    for idx, row in df_ch.iterrows():
+                        name = row['nombre']
+                        disp = row['disponible']
+                        
+                        if name and name.upper() in ocupados:
+                            bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
+                            badge = "🔴 EN VIAJE"
+                        elif disp == 'NO':
+                            bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                            badge = "🟡 NO DISPONIBLE"
+                        else:
+                            bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                            badge = "🟢 DISPONIBLE"
+                            
+                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        with cc_card:
+                            st.markdown(f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
+                                <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{name}</div>
+                                <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} ({row['tipo']})</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with cc_btn:
+                            btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                            if st.button(btn_lbl, key=f"tv_toggle_chof_{name}", use_container_width=True):
+                                new_disp = 'NO' if disp == 'SI' else 'SI'
+                                run_query("UPDATE choferes SET disponible = ? WHERE nombre = ?", (new_disp, name))
+                                st.rerun()
+
+            # 2. Camiones
+            with col2:
+                st.markdown("#### 🚛 Camiones")
+                df_cam = pd.read_sql_query("SELECT tracto, placas, disponible FROM camiones ORDER BY tracto ASC", get_connection())
+                camiones_ocupados = get_camiones_ocupados_hoy()
+                if df_cam.empty:
+                    st.info("No hay camiones registrados.")
+                else:
+                    for idx, row in df_cam.iterrows():
+                        tracto = row['tracto']
+                        placas = row['placas'] or ''
+                        disp = row['disponible']
+                        
+                        if tracto and tracto.upper() in camiones_ocupados:
+                            bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
+                            badge = "🔴 EN VIAJE"
+                        elif disp == 'NO':
+                            bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                            badge = "🟡 NO DISPONIBLE"
+                        else:
+                            bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                            badge = "🟢 DISPONIBLE"
+                            
+                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        with cc_card:
+                            st.markdown(f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
+                                <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{tracto}</div>
+                                <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} {f'({placas})' if placas else ''}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with cc_btn:
+                            btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                            if st.button(btn_lbl, key=f"tv_toggle_cam_{tracto}", use_container_width=True):
+                                new_disp = 'NO' if disp == 'SI' else 'SI'
+                                run_query("UPDATE camiones SET disponible = ? WHERE tracto = ?", (new_disp, tracto))
+                                st.rerun()
+
+            # 3. Cajas
+            with col3:
+                st.markdown("#### 📦 Cajas")
+                df_cj = pd.read_sql_query("SELECT caja, disponible FROM cajas ORDER BY caja ASC", get_connection())
+                cajas_ocupadas = get_cajas_ocupados_hoy()
+                if df_cj.empty:
+                    st.info("No hay cajas registradas.")
+                else:
+                    for idx, row in df_cj.iterrows():
+                        caja = row['caja']
+                        disp = row['disponible']
+                        
+                        if caja and caja.upper() in cajas_ocupadas:
+                            bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
+                            badge = "🔴 EN VIAJE"
+                        elif disp == 'NO':
+                            bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                            badge = "🟡 NO DISPONIBLE"
+                        else:
+                            bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                            badge = "🟢 DISPONIBLE"
+                            
+                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        with cc_card:
+                            st.markdown(f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
+                                <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{caja}</div>
+                                <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with cc_btn:
+                            btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                            if st.button(btn_lbl, key=f"tv_toggle_cj_{caja}", use_container_width=True):
+                                new_disp = 'NO' if disp == 'SI' else 'SI'
+                                run_query("UPDATE cajas SET disponible = ? WHERE caja = ?", (new_disp, caja))
+                                st.rerun()
+        render_tv_disponibilidad()
+    
     st.stop()
 
 # --- NAVBAR ---
 logo_b64 = get_image_base64(LOGO_FILE); logo_html = f'<img src="{logo_b64}" style="height:35px;">' if logo_b64 else "🚛 "
-st.markdown(f'<div class="top-nav"><div>{logo_html} OTD FREIGHT</div><div>{APP_VERSION}</div></div>', unsafe_allow_html=True)
+is_postgres = check_is_postgres()
+if is_postgres:
+    db_status = '<span style="background-color: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #10b981; font-weight: bold; margin-left: 15px;">☁️ BD: Nube (Postgres)</span>'
+else:
+    db_status = '<span style="background-color: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #fca5a5; font-weight: bold; margin-left: 15px;">⚠️ BD: Local Temporal (SQLite) - ¡Los datos se borrarán al reiniciar!</span>'
+st.markdown(f'<div class="top-nav"><div>{logo_html} OTD FREIGHT {db_status}</div><div>{APP_VERSION}</div></div>', unsafe_allow_html=True)
+
+if st.session_state.get("db_connection_error"):
+    st.error(f"❌ **Error al conectar a PostgreSQL (Base de Datos en la Nube):**\n\n`{st.session_state.db_connection_error}`\n\nEl sistema se ha redirigido automáticamente a la base de datos local **SQLite** temporal para evitar la caída del sistema. Ten en cuenta que los datos que ingreses se borrarán al reiniciar la aplicación.")
 
 # --- NAVEGACION ---
 c1, c2, c3, c4 = st.columns(4)
@@ -1110,7 +1271,7 @@ if st.session_state.menu_actual == "OPERACIONES":
     with tab_hist_viajes:
         st.markdown("### 🏆 Historial de Viajes Completados / Archivados")
         
-        is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+        is_postgres = check_is_postgres()
         
         if is_postgres:
             query_hist = "SELECT rowid, fecha, hora, movimiento, cliente, folio_cp, factura, bascula, costo_final, moneda, ups, profepa, carta_porte, manifiesto, operador as chofer, tracto as camion, caja, destino, fecha_completado FROM historial_panel ORDER BY fecha_completado DESC LIMIT 100"
@@ -1286,24 +1447,32 @@ if st.session_state.menu_actual == "OPERACIONES":
                     st.rerun()
             
             conn_chof = get_connection()
-            df_choferes = pd.read_sql_query("SELECT nombre, tipo FROM choferes ORDER BY nombre ASC", conn_chof)
+            df_choferes = pd.read_sql_query("SELECT nombre, tipo, disponible FROM choferes ORDER BY nombre ASC", conn_chof)
             conn_chof.close()
             ocupados = get_ocupados_hoy()
             if df_choferes.empty:
-                df_choferes = pd.DataFrame(columns=['nombre', 'tipo'])
+                df_choferes = pd.DataFrame(columns=['nombre', 'tipo', 'disponible'])
                 
-            df_choferes['Estado'] = df_choferes['nombre'].apply(
-                lambda x: "🔴 EN VIAJE" if x and x.upper() in ocupados else "🟢 DISPONIBLE"
-            )
+            def get_chof_state(row):
+                name = row['nombre']
+                disp = row['disponible']
+                if name and name.upper() in ocupados:
+                    return "🔴 EN VIAJE"
+                elif disp == 'NO':
+                    return "🟡 NO DISPONIBLE"
+                else:
+                    return "🟢 DISPONIBLE"
+                    
+            df_choferes['Estado'] = df_choferes.apply(get_chof_state, axis=1)
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Choferes")
                 st.markdown(
                     """
                     <div style="background: rgba(255, 255, 255, 0.05); color: #94a3b8; padding: 8px 12px; border-radius: 8px; display: flex; align-items: center; font-weight: bold; border: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 6px; font-size: 12px;">
-                        <div style="flex: 2;">CHOFER</div>
+                        <div style="flex: 2.2;">CHOFER</div>
                         <div style="flex: 1;">TIPO</div>
-                        <div style="flex: 1.2; text-align: right;">ESTADO</div>
+                        <div style="flex: 1.5; text-align: right;">ESTADO / ACCIÓN</div>
                     </div>
                     """,
                     unsafe_allow_html=True
@@ -1311,28 +1480,46 @@ if st.session_state.menu_actual == "OPERACIONES":
                 
                 for idx, row in df_choferes.iterrows():
                     estado = row['Estado']
-                    if "DISPONIBLE" in estado:
+                    disp = row['disponible']
+                    
+                    if "🟢 DISPONIBLE" in estado:
                         bg, txt, border = "rgba(16, 185, 129, 0.08)", "#6ee7b7", "rgba(16, 185, 129, 0.2)"
                         badge = "<span style='color: #10b981; font-weight: bold;'>● DISPO</span>"
-                    else:
+                    elif "🔴 EN VIAJE" in estado:
                         bg, txt, border = "rgba(239, 68, 68, 0.08)", "#fca5a5", "rgba(239, 68, 68, 0.2)"
                         badge = "<span style='color: #ef4444; font-weight: bold;'>● VIAJE</span>"
+                    else: # 🟡 NO DISPONIBLE
+                        bg, txt, border = "rgba(245, 158, 11, 0.08)", "#fcd34d", "rgba(245, 158, 11, 0.2)"
+                        badge = "<span style='color: #f59e0b; font-weight: bold;'>● NO DISPO</span>"
                     
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; margin-bottom: 6px; font-size: 13px;">
-                            <div style="flex: 2; font-weight: 600; text-transform: uppercase;">{row['nombre']}</div>
-                            <div style="flex: 1; font-weight: bold; font-size: 11px; opacity: 0.85;">{row['tipo']}</div>
-                            <div style="flex: 1.2; text-align: right; font-size: 11px;">{badge}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                    c_card, c_btn = st.columns([3.5, 1.5])
+                    with c_card:
+                        st.markdown(
+                            f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; font-size: 13px;">
+                                <div style="flex: 2.2; font-weight: 600; text-transform: uppercase;">{row['nombre']}</div>
+                                <div style="flex: 1; font-weight: bold; font-size: 11px; opacity: 0.85;">{row['tipo']}</div>
+                                <div style="flex: 1.5; text-align: right; font-size: 11px;">{badge}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                    with c_btn:
+                        btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                        if st.button(btn_lbl, key=f"btn_toggle_chof_{row['nombre']}", use_container_width=True):
+                            new_disp = 'NO' if disp == 'SI' else 'SI'
+                            run_query("UPDATE choferes SET disponible = ? WHERE nombre = ?", (new_disp, row['nombre']))
+                            st.rerun()
             else:
                 st.markdown("##### 📝 Editar Choferes de Forma Manual")
-                df_choferes_renamed = df_choferes.rename(columns={
+                
+                df_chof_to_edit = df_choferes.copy()
+                df_chof_to_edit['disponible'] = df_chof_to_edit['disponible'].apply(lambda x: x == 'SI')
+                
+                df_choferes_renamed = df_chof_to_edit.rename(columns={
                     'nombre': 'Chofer',
                     'tipo': 'Tipo',
+                    'disponible': 'Disponible',
                     'Estado': 'Estado Actual'
                 })
                 
@@ -1341,6 +1528,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                     column_config={
                         "Chofer": st.column_config.TextColumn("Chofer", required=True),
                         "Tipo": st.column_config.SelectboxColumn("Tipo", options=["TRANSFER", "B1", "LOCAL"], required=True),
+                        "Disponible": st.column_config.CheckboxColumn("Disponible", default=True),
                         "Estado Actual": st.column_config.TextColumn("Estado Actual", disabled=True)
                     },
                     use_container_width=True,
@@ -1350,20 +1538,24 @@ if st.session_state.menu_actual == "OPERACIONES":
                 )
                 
                 # Auto-save changes in drivers table
-                orig_compare = df_choferes_renamed[['Chofer', 'Tipo']].copy()
+                orig_compare = df_choferes_renamed[['Chofer', 'Tipo', 'Disponible']].copy()
                 orig_compare['Chofer'] = orig_compare['Chofer'].fillna('').str.strip().str.upper()
                 orig_compare['Tipo'] = orig_compare['Tipo'].fillna('TRANSFER').str.strip().str.upper()
                 
-                edited_compare = edited_choferes[['Chofer', 'Tipo']].copy()
+                edited_compare = edited_choferes[['Chofer', 'Tipo', 'Disponible']].copy()
                 edited_compare['Chofer'] = edited_compare['Chofer'].fillna('').str.strip().str.upper()
                 edited_compare['Tipo'] = edited_compare['Tipo'].fillna('TRANSFER').str.strip().str.upper()
                 edited_compare = edited_compare[edited_compare['Chofer'] != '']
+                
+                # Convert back boolean to text for comparisons
+                orig_compare['Disponible'] = orig_compare['Disponible'].apply(lambda x: 'SI' if x else 'NO')
+                edited_compare['Disponible'] = edited_compare['Disponible'].apply(lambda x: 'SI' if x else 'NO')
                 
                 if not orig_compare.equals(edited_compare):
                     try:
                         run_query("DELETE FROM choferes")
                         for idx, row in edited_compare.iterrows():
-                            run_query("INSERT OR IGNORE INTO choferes (nombre, tipo) VALUES (?, ?)", (row['Chofer'], row['Tipo']))
+                            run_query("INSERT OR IGNORE INTO choferes (nombre, tipo, disponible) VALUES (?, ?, ?)", (row['Chofer'], row['Tipo'], row['Disponible']))
                         st.toast("✅ Cambios en choferes guardados.")
                         time.sleep(0.5)
                         st.rerun()
@@ -1385,24 +1577,32 @@ if st.session_state.menu_actual == "OPERACIONES":
                     st.rerun()
             
             conn_cam = get_connection()
-            df_camiones = pd.read_sql_query("SELECT tracto, placas FROM camiones ORDER BY tracto ASC", conn_cam)
+            df_camiones = pd.read_sql_query("SELECT tracto, placas, disponible FROM camiones ORDER BY tracto ASC", conn_cam)
             conn_cam.close()
             camiones_ocupados = get_camiones_ocupados_hoy()
             if df_camiones.empty:
-                df_camiones = pd.DataFrame(columns=['tracto', 'placas'])
+                df_camiones = pd.DataFrame(columns=['tracto', 'placas', 'disponible'])
                 
-            df_camiones['Estado'] = df_camiones['tracto'].apply(
-                lambda x: "🔴 EN VIAJE" if x and x.upper() in camiones_ocupados else "🟢 DISPONIBLE"
-            )
+            def get_camion_state(row):
+                tr = row['tracto']
+                disp = row['disponible']
+                if tr and tr.upper() in camiones_ocupados:
+                    return "🔴 EN VIAJE"
+                elif disp == 'NO':
+                    return "🟡 NO DISPONIBLE"
+                else:
+                    return "🟢 DISPONIBLE"
+                    
+            df_camiones['Estado'] = df_camiones.apply(get_camion_state, axis=1)
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Camiones")
                 st.markdown(
                     """
                     <div style="background: rgba(255, 255, 255, 0.05); color: #94a3b8; padding: 8px 12px; border-radius: 8px; display: flex; align-items: center; font-weight: bold; border: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 6px; font-size: 12px;">
-                        <div style="flex: 1;">CAMIÓN</div>
-                        <div style="flex: 2;">PLACAS</div>
-                        <div style="flex: 1.2; text-align: right;">ESTADO</div>
+                        <div style="flex: 1.2;">CAMIÓN</div>
+                        <div style="flex: 1.8;">PLACAS</div>
+                        <div style="flex: 1.5; text-align: right;">ESTADO / ACCIÓN</div>
                     </div>
                     """,
                     unsafe_allow_html=True
@@ -1410,28 +1610,46 @@ if st.session_state.menu_actual == "OPERACIONES":
                 
                 for idx, row in df_camiones.iterrows():
                     estado = row['Estado']
-                    if "DISPONIBLE" in estado:
+                    disp = row['disponible']
+                    
+                    if "🟢 DISPONIBLE" in estado:
                         bg, txt, border = "rgba(16, 185, 129, 0.08)", "#6ee7b7", "rgba(16, 185, 129, 0.2)"
                         badge = "<span style='color: #10b981; font-weight: bold;'>● DISPO</span>"
-                    else:
+                    elif "🔴 EN VIAJE" in estado:
                         bg, txt, border = "rgba(239, 68, 68, 0.08)", "#fca5a5", "rgba(239, 68, 68, 0.2)"
                         badge = "<span style='color: #ef4444; font-weight: bold;'>● VIAJE</span>"
+                    else: # 🟡 NO DISPONIBLE
+                        bg, txt, border = "rgba(245, 158, 11, 0.08)", "#fcd34d", "rgba(245, 158, 11, 0.2)"
+                        badge = "<span style='color: #f59e0b; font-weight: bold;'>● NO DISPO</span>"
                     
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; margin-bottom: 6px; font-size: 13px;">
-                            <div style="flex: 1; font-weight: bold; text-transform: uppercase;">{row['tracto']}</div>
-                            <div style="flex: 2; font-family: monospace; font-size: 11px;">{row['placas'] or ''}</div>
-                            <div style="flex: 1.2; text-align: right; font-size: 11px;">{badge}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                    c_card, c_btn = st.columns([3.5, 1.5])
+                    with c_card:
+                        st.markdown(
+                            f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; font-size: 13px;">
+                                <div style="flex: 1.2; font-weight: bold; text-transform: uppercase;">{row['tracto']}</div>
+                                <div style="flex: 1.8; font-family: monospace; font-size: 11px;">{row['placas'] or ''}</div>
+                                <div style="flex: 1.5; text-align: right; font-size: 11px;">{badge}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                    with c_btn:
+                        btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                        if st.button(btn_lbl, key=f"btn_toggle_cam_{row['tracto']}", use_container_width=True):
+                            new_disp = 'NO' if disp == 'SI' else 'SI'
+                            run_query("UPDATE camiones SET disponible = ? WHERE tracto = ?", (new_disp, row['tracto']))
+                            st.rerun()
             else:
                 st.markdown("##### 📝 Editar Camiones de Forma Manual")
-                df_camiones_renamed = df_camiones.rename(columns={
+                
+                df_cam_to_edit = df_camiones.copy()
+                df_cam_to_edit['disponible'] = df_cam_to_edit['disponible'].apply(lambda x: x == 'SI')
+                
+                df_camiones_renamed = df_cam_to_edit.rename(columns={
                     'tracto': 'Camión',
                     'placas': 'Placas',
+                    'disponible': 'Disponible',
                     'Estado': 'Estado Actual'
                 })
                 
@@ -1440,6 +1658,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                     column_config={
                         "Camión": st.column_config.TextColumn("Camión", required=True),
                         "Placas": st.column_config.TextColumn("Placas"),
+                        "Disponible": st.column_config.CheckboxColumn("Disponible", default=True),
                         "Estado Actual": st.column_config.TextColumn("Estado Actual", disabled=True)
                     },
                     use_container_width=True,
@@ -1449,20 +1668,24 @@ if st.session_state.menu_actual == "OPERACIONES":
                 )
                 
                 # Auto-save changes in trucks table
-                orig_compare = df_camiones_renamed[['Camión', 'Placas']].copy()
+                orig_compare = df_camiones_renamed[['Camión', 'Placas', 'Disponible']].copy()
                 orig_compare['Camión'] = orig_compare['Camión'].fillna('').str.strip().str.upper()
                 orig_compare['Placas'] = orig_compare['Placas'].fillna('').str.strip().str.upper()
                 
-                edited_compare = edited_camiones[['Camión', 'Placas']].copy()
+                edited_compare = edited_camiones[['Camión', 'Placas', 'Disponible']].copy()
                 edited_compare['Camión'] = edited_compare['Camión'].fillna('').str.strip().str.upper()
                 edited_compare['Placas'] = edited_compare['Placas'].fillna('').str.strip().str.upper()
                 edited_compare = edited_compare[edited_compare['Camión'] != '']
+                
+                # Convert back boolean to text for comparisons
+                orig_compare['Disponible'] = orig_compare['Disponible'].apply(lambda x: 'SI' if x else 'NO')
+                edited_compare['Disponible'] = edited_compare['Disponible'].apply(lambda x: 'SI' if x else 'NO')
                 
                 if not orig_compare.equals(edited_compare):
                     try:
                         run_query("DELETE FROM camiones")
                         for idx, row in edited_compare.iterrows():
-                            run_query("INSERT OR IGNORE INTO camiones (tracto, placas) VALUES (?, ?)", (row['Camión'], row['Placas']))
+                            run_query("INSERT OR IGNORE INTO camiones (tracto, placas, disponible) VALUES (?, ?, ?)", (row['Camión'], row['Placas'], row['Disponible']))
                         st.toast("✅ Cambios en camiones guardados.")
                         time.sleep(0.5)
                         st.rerun()
@@ -1480,15 +1703,23 @@ if st.session_state.menu_actual == "OPERACIONES":
                     st.rerun()
             
             conn_caj = get_connection()
-            df_cajas = pd.read_sql_query("SELECT caja FROM cajas ORDER BY caja ASC", conn_caj)
+            df_cajas = pd.read_sql_query("SELECT caja, disponible FROM cajas ORDER BY caja ASC", conn_caj)
             conn_caj.close()
             cajas_ocupadas = get_cajas_ocupados_hoy()
             if df_cajas.empty:
-                df_cajas = pd.DataFrame(columns=['caja'])
+                df_cajas = pd.DataFrame(columns=['caja', 'disponible'])
                 
-            df_cajas['Estado'] = df_cajas['caja'].apply(
-                lambda x: "🔴 EN VIAJE" if x and x.upper() in cajas_ocupadas else "🟢 DISPONIBLE"
-            )
+            def get_caja_state(row):
+                cj = row['caja']
+                disp = row['disponible']
+                if cj and cj.upper() in cajas_ocupadas:
+                    return "🔴 EN VIAJE"
+                elif disp == 'NO':
+                    return "🟡 NO DISPONIBLE"
+                else:
+                    return "🟢 DISPONIBLE"
+                    
+            df_cajas['Estado'] = df_cajas.apply(get_caja_state, axis=1)
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Cajas")
@@ -1496,7 +1727,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                     """
                     <div style="background: rgba(255, 255, 255, 0.05); color: #94a3b8; padding: 8px 12px; border-radius: 8px; display: flex; align-items: center; font-weight: bold; border: 1px solid rgba(255, 255, 255, 0.08); margin-bottom: 6px; font-size: 12px;">
                         <div style="flex: 2.2;">CAJA</div>
-                        <div style="flex: 1.8; text-align: right;">ESTADO</div>
+                        <div style="flex: 1.8; text-align: right;">ESTADO / ACCIÓN</div>
                     </div>
                     """,
                     unsafe_allow_html=True
@@ -1504,26 +1735,44 @@ if st.session_state.menu_actual == "OPERACIONES":
                 
                 for idx, row in df_cajas.iterrows():
                     estado = row['Estado']
-                    if "DISPONIBLE" in estado:
+                    disp = row['disponible']
+                    
+                    if "🟢 DISPONIBLE" in estado:
                         bg, txt, border = "rgba(16, 185, 129, 0.08)", "#6ee7b7", "rgba(16, 185, 129, 0.2)"
                         badge = "<span style='color: #10b981; font-weight: bold;'>● DISPO</span>"
-                    else:
+                    elif "🔴 EN VIAJE" in estado:
                         bg, txt, border = "rgba(239, 68, 68, 0.08)", "#fca5a5", "rgba(239, 68, 68, 0.2)"
                         badge = "<span style='color: #ef4444; font-weight: bold;'>● VIAJE</span>"
+                    else: # 🟡 NO DISPONIBLE
+                        bg, txt, border = "rgba(245, 158, 11, 0.08)", "#fcd34d", "rgba(245, 158, 11, 0.2)"
+                        badge = "<span style='color: #f59e0b; font-weight: bold;'>● NO DISPO</span>"
                     
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; margin-bottom: 6px; font-size: 13px;">
-                            <div style="flex: 2.2; font-weight: bold; text-transform: uppercase;">{row['caja']}</div>
-                            <div style="flex: 1.8; text-align: right; font-size: 11px;">{badge}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                    c_card, c_btn = st.columns([3.5, 1.5])
+                    with c_card:
+                        st.markdown(
+                            f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; font-size: 13px;">
+                                <div style="flex: 2.2; font-weight: bold; text-transform: uppercase;">{row['caja']}</div>
+                                <div style="flex: 1.8; text-align: right; font-size: 11px;">{badge}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                    with c_btn:
+                        btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                        if st.button(btn_lbl, key=f"btn_toggle_caj_{row['caja']}", use_container_width=True):
+                            new_disp = 'NO' if disp == 'SI' else 'SI'
+                            run_query("UPDATE cajas SET disponible = ? WHERE caja = ?", (new_disp, row['caja']))
+                            st.rerun()
             else:
                 st.markdown("##### 📝 Editar Cajas de Forma Manual")
-                df_cajas_renamed = df_cajas.rename(columns={
+                
+                df_caj_to_edit = df_cajas.copy()
+                df_caj_to_edit['disponible'] = df_caj_to_edit['disponible'].apply(lambda x: x == 'SI')
+                
+                df_cajas_renamed = df_caj_to_edit.rename(columns={
                     'caja': 'Caja',
+                    'disponible': 'Disponible',
                     'Estado': 'Estado Actual'
                 })
                 
@@ -1531,6 +1780,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                     df_cajas_renamed,
                     column_config={
                         "Caja": st.column_config.TextColumn("Caja", required=True),
+                        "Disponible": st.column_config.CheckboxColumn("Disponible", default=True),
                         "Estado Actual": st.column_config.TextColumn("Estado Actual", disabled=True)
                     },
                     use_container_width=True,
@@ -1540,18 +1790,22 @@ if st.session_state.menu_actual == "OPERACIONES":
                 )
                 
                 # Auto-save changes in cajas table
-                orig_compare = df_cajas_renamed[['Caja']].copy()
+                orig_compare = df_cajas_renamed[['Caja', 'Disponible']].copy()
                 orig_compare['Caja'] = orig_compare['Caja'].fillna('').str.strip().str.upper()
                 
-                edited_compare = edited_cajas[['Caja']].copy()
+                edited_compare = edited_cajas[['Caja', 'Disponible']].copy()
                 edited_compare['Caja'] = edited_compare['Caja'].fillna('').str.strip().str.upper()
                 edited_compare = edited_compare[edited_compare['Caja'] != '']
+                
+                # Convert back boolean to text for comparisons
+                orig_compare['Disponible'] = orig_compare['Disponible'].apply(lambda x: 'SI' if x else 'NO')
+                edited_compare['Disponible'] = edited_compare['Disponible'].apply(lambda x: 'SI' if x else 'NO')
                 
                 if not orig_compare.equals(edited_compare):
                     try:
                         run_query("DELETE FROM cajas")
                         for idx, row in edited_compare.iterrows():
-                            run_query("INSERT OR IGNORE INTO cajas (caja) VALUES (?)", (row['Caja'],))
+                            run_query("INSERT OR IGNORE INTO cajas (caja, disponible) VALUES (?, ?)", (row['Caja'], row['Disponible']))
                         st.toast("✅ Cambios en cajas guardados.")
                         time.sleep(0.5)
                         st.rerun()
@@ -1641,7 +1895,7 @@ if st.session_state.menu_actual == "VENCIMIENTOS":
             
             query += " ORDER BY fecha_venc ASC"
             
-            is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+            is_postgres = check_is_postgres()
             if is_postgres:
                 query = query.replace("?", "%s")
             conn = get_connection()
@@ -1857,9 +2111,18 @@ if st.session_state.menu_actual == "MODO_TV":
         """, unsafe_allow_html=True)
     
     # 2. Barra superior
+    is_postgres = check_is_postgres()
+    if is_postgres:
+        db_status = '<span style="background-color: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #10b981; font-weight: bold; margin-left: 15px; vertical-align: middle;">☁️ BD: Nube</span>'
+    else:
+        db_status = '<span style="background-color: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #fca5a5; font-weight: bold; margin-left: 15px; vertical-align: middle;">⚠️ BD: SQLite Temporal</span>'
+
     c_title, c_date, c_refresh, c_exit = st.columns([4, 2, 2, 2])
     with c_title:
-        st.markdown("<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span></h2><style>@keyframes blink { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }</style>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span> {db_status}</h2><style>@keyframes blink {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}</style>", unsafe_allow_html=True)
+
+    if st.session_state.get("db_connection_error"):
+        st.error(f"⚠️ **Error conexión BD Nube:** {st.session_state.db_connection_error}")
     with c_date:
         tv_fecha = st.date_input("📅 Fecha Proyectada", value=get_local_now(), key="tv_fecha_input")
         tv_fecha_str = tv_fecha.strftime("%Y-%m-%d")
@@ -1874,75 +2137,196 @@ if st.session_state.menu_actual == "MODO_TV":
             st.session_state.menu_actual = "OPERACIONES"
             st.rerun()
             
-    # 3. Fragmento auto-actualizable para la vista en TV
-    @st.fragment(run_every=refresh_seconds)
-    def render_tv_layout(fecha_filtro):
-        df_tv = cargar_dataframe("panel", fecha_filtro)
-        if not df_tv.empty:
-            st.markdown(
-                """
-                <div style="background: rgba(255, 255, 255, 0.05); color: #94a3b8; padding: 12px 18px; border-radius: 12px; display: flex; align-items: center; font-weight: bold; border: 1px solid rgba(255, 255, 255, 0.1); margin-bottom: 10px; font-size: 15px;">
-                    <div style="flex: 0.8;">HORA</div>
-                    <div style="flex: 1.5;">MOVIMIENTO</div>
-                    <div style="flex: 0.8;">CLIENTE</div>
-                    <div style="flex: 1.8;">FOLIO / FACTURA</div>
-                    <div style="flex: 2.5;">CHOFER</div>
-                    <div style="flex: 0.8;">CAMIÓN</div>
-                    <div style="flex: 0.8;">CAJA</div>
-                    <div style="flex: 2.2;">DESTINO</div>
-                    <div style="flex: 1.2; text-align: center;">DOCS</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-            
-            for idx, row in df_tv.iterrows():
-                mov = str(row['movimiento']).upper()
-                
-                # Asignar tema de color según el movimiento
-                if "EXPORTACION" in mov:
-                    bg_color, text_color, border_color = "rgba(59, 130, 246, 0.15)", "#93c5fd", "rgba(59, 130, 246, 0.35)"
-                elif "IMPORTACION" in mov:
-                    bg_color, text_color, border_color = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                elif "TARIMAS" in mov:
-                    bg_color, text_color, border_color = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                else: # TRANSFER
-                    bg_color, text_color, border_color = "rgba(139, 92, 246, 0.15)", "#c084fc", "rgba(139, 92, 246, 0.35)"
-                
-                # Combinar Folio y Factura
-                folio = str(row['folio_cp']) if row['folio_cp'] else ""
-                factura = str(row['factura']) if row['factura'] else ""
-                if folio and factura:
-                    folio_factura = f"{folio} / {factura}"
-                else:
-                    folio_factura = folio or factura or "-"
-                
-                # Badges de documentos
-                cp_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold; margin-right:4px;'>📄 CP</span>" if row['carta_porte'] else ""
-                man_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold;'>📋 MAN</span>" if row['manifiesto'] else ""
-                docs_badges = f"{cp_badge} {man_badge}".strip() if (cp_badge or man_badge) else "<span style='color: #64748b; font-size:13px;'>-</span>"
-                
+    # 3. Pestañas de Navegación del Modo TV
+    tab_tv_viajes, tab_tv_dispo = st.tabs(["📋 VIAJES DEL DÍA", "📊 DISPONIBILIDAD FLOTA"])
+    
+    with tab_tv_viajes:
+        @st.fragment(run_every=refresh_seconds)
+        def render_tv_layout(fecha_filtro):
+            df_tv = cargar_dataframe("panel", fecha_filtro)
+            if not df_tv.empty:
                 st.markdown(
-                    f"""
-                    <div style="background-color: {bg_color}; color: {text_color}; padding: 16px 20px; border-radius: 12px; border: 1px solid {border_color}; display: flex; align-items: center; min-height: 56px; margin-bottom: 10px; font-size: 16px;">
-                        <div style="flex: 0.8; font-weight: 500;">{row['hora']}</div>
-                        <div style="flex: 1.5; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">{mov}</div>
-                        <div style="flex: 0.8; font-weight: 600;">{row['cliente']}</div>
-                        <div style="flex: 1.8; font-family: monospace; font-size: 15px;">{folio_factura}</div>
-                        <div style="flex: 2.5; font-weight: 600; text-transform: uppercase;">{row['operador']}</div>
-                        <div style="flex: 0.8; font-weight: bold;">{row['tracto']}</div>
-                        <div style="flex: 0.8; font-weight: bold;">{row['caja']}</div>
-                        <div style="flex: 2.2; font-size: 15px;">{row['destino'] or ''}</div>
-                        <div style="flex: 1.2; display: flex; gap: 4px; justify-content: center; align-items: center;">{docs_badges}</div>
+                    """
+                    <div style="background: rgba(255, 255, 255, 0.05); color: #94a3b8; padding: 12px 18px; border-radius: 12px; display: flex; align-items: center; font-weight: bold; border: 1px solid rgba(255, 255, 255, 0.1); margin-bottom: 10px; font-size: 15px;">
+                        <div style="flex: 0.8;">HORA</div>
+                        <div style="flex: 1.5;">MOVIMIENTO</div>
+                        <div style="flex: 0.8;">CLIENTE</div>
+                        <div style="flex: 1.8;">FOLIO / FACTURA</div>
+                        <div style="flex: 2.5;">CHOFER</div>
+                        <div style="flex: 0.8;">CAMIÓN</div>
+                        <div style="flex: 0.8;">CAJA</div>
+                        <div style="flex: 2.2;">DESTINO</div>
+                        <div style="flex: 1.2; text-align: center;">DOCS</div>
                     </div>
                     """,
                     unsafe_allow_html=True
                 )
-            st.caption(f"Última actualización automática: {get_local_now().strftime('%H:%M:%S')}")
-        else:
-            st.info(f"No hay registros de viajes para el {fecha_filtro}.")
+                
+                for idx, row in df_tv.iterrows():
+                    mov = str(row['movimiento']).upper()
+                    
+                    # Asignar tema de color según el movimiento
+                    if "EXPORTACION" in mov:
+                        bg_color, text_color, border_color = "rgba(59, 130, 246, 0.15)", "#93c5fd", "rgba(59, 130, 246, 0.35)"
+                    elif "IMPORTACION" in mov:
+                        bg_color, text_color, border_color = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                    elif "TARIMAS" in mov:
+                        bg_color, text_color, border_color = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                    else: # TRANSFER
+                        bg_color, text_color, border_color = "rgba(139, 92, 246, 0.15)", "#c084fc", "rgba(139, 92, 246, 0.35)"
+                    
+                    # Combinar Folio y Factura
+                    folio = str(row['folio_cp']) if row['folio_cp'] else ""
+                    factura = str(row['factura']) if row['factura'] else ""
+                    if folio and factura:
+                        folio_factura = f"{folio} / {factura}"
+                    else:
+                        folio_factura = folio or factura or "-"
+                    
+                    # Badges de documentos
+                    cp_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold; margin-right:4px;'>📄 CP</span>" if row['carta_porte'] else ""
+                    man_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold;'>📋 MAN</span>" if row['manifiesto'] else ""
+                    docs_badges = f"{cp_badge} {man_badge}".strip() if (cp_badge or man_badge) else "<span style='color: #64748b; font-size:13px;'>-</span>"
+                    
+                    st.markdown(
+                        f"""
+                        <div style="background-color: {bg_color}; color: {text_color}; padding: 16px 20px; border-radius: 12px; border: 1px solid {border_color}; display: flex; align-items: center; min-height: 56px; margin-bottom: 10px; font-size: 16px;">
+                            <div style="flex: 0.8; font-weight: 500;">{row['hora']}</div>
+                            <div style="flex: 1.5; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">{mov}</div>
+                            <div style="flex: 0.8; font-weight: 600;">{row['cliente']}</div>
+                            <div style="flex: 1.8; font-family: monospace; font-size: 15px;">{folio_factura}</div>
+                            <div style="flex: 2.5; font-weight: 600; text-transform: uppercase;">{row['operador']}</div>
+                            <div style="flex: 0.8; font-weight: bold;">{row['tracto']}</div>
+                            <div style="flex: 0.8; font-weight: bold;">{row['caja']}</div>
+                            <div style="flex: 2.2; font-size: 15px;">{row['destino'] or ''}</div>
+                            <div style="flex: 1.2; display: flex; gap: 4px; justify-content: center; align-items: center;">{docs_badges}</div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
+                st.caption(f"Última actualización automática: {get_local_now().strftime('%H:%M:%S')}")
+            else:
+                st.info(f"No hay registros de viajes para el {fecha_filtro}.")
+                
+        render_tv_layout(tv_fecha_str)
+
+    with tab_tv_dispo:
+        @st.fragment(run_every=refresh_seconds)
+        def render_tv_disponibilidad_nav():
+            col1, col2, col3 = st.columns(3)
             
-    render_tv_layout(tv_fecha_str)
+            # 1. Choferes
+            with col1:
+                st.markdown("#### 👥 Choferes")
+                df_ch = pd.read_sql_query("SELECT nombre, tipo, disponible FROM choferes ORDER BY nombre ASC", get_connection())
+                ocupados = get_ocupados_hoy()
+                if df_ch.empty:
+                    st.info("No hay choferes registrados.")
+                else:
+                    for idx, row in df_ch.iterrows():
+                        name = row['nombre']
+                        disp = row['disponible']
+                        
+                        if name and name.upper() in ocupados:
+                            bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
+                            badge = "🔴 EN VIAJE"
+                        elif disp == 'NO':
+                            bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                            badge = "🟡 NO DISPONIBLE"
+                        else:
+                            bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                            badge = "🟢 DISPONIBLE"
+                            
+                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        with cc_card:
+                            st.markdown(f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
+                                <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{name}</div>
+                                <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} ({row['tipo']})</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with cc_btn:
+                            btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                            if st.button(btn_lbl, key=f"tv_nav_toggle_chof_{name}", use_container_width=True):
+                                new_disp = 'NO' if disp == 'SI' else 'SI'
+                                run_query("UPDATE choferes SET disponible = ? WHERE nombre = ?", (new_disp, name))
+                                st.rerun()
+
+            # 2. Camiones
+            with col2:
+                st.markdown("#### 🚛 Camiones")
+                df_cam = pd.read_sql_query("SELECT tracto, placas, disponible FROM camiones ORDER BY tracto ASC", get_connection())
+                camiones_ocupados = get_camiones_ocupados_hoy()
+                if df_cam.empty:
+                    st.info("No hay camiones registrados.")
+                else:
+                    for idx, row in df_cam.iterrows():
+                        tracto = row['tracto']
+                        placas = row['placas'] or ''
+                        disp = row['disponible']
+                        
+                        if tracto and tracto.upper() in camiones_ocupados:
+                            bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
+                            badge = "🔴 EN VIAJE"
+                        elif disp == 'NO':
+                            bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                            badge = "🟡 NO DISPONIBLE"
+                        else:
+                            bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                            badge = "🟢 DISPONIBLE"
+                            
+                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        with cc_card:
+                            st.markdown(f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
+                                <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{tracto}</div>
+                                <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} {f'({placas})' if placas else ''}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with cc_btn:
+                            btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                            if st.button(btn_lbl, key=f"tv_nav_toggle_cam_{tracto}", use_container_width=True):
+                                new_disp = 'NO' if disp == 'SI' else 'SI'
+                                run_query("UPDATE camiones SET disponible = ? WHERE tracto = ?", (new_disp, tracto))
+                                st.rerun()
+
+            # 3. Cajas
+            with col3:
+                st.markdown("#### 📦 Cajas")
+                df_cj = pd.read_sql_query("SELECT caja, disponible FROM cajas ORDER BY caja ASC", get_connection())
+                cajas_ocupadas = get_cajas_ocupados_hoy()
+                if df_cj.empty:
+                    st.info("No hay cajas registradas.")
+                else:
+                    for idx, row in df_cj.iterrows():
+                        caja = row['caja']
+                        disp = row['disponible']
+                        
+                        if caja and caja.upper() in cajas_ocupadas:
+                            bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
+                            badge = "🔴 EN VIAJE"
+                        elif disp == 'NO':
+                            bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
+                            badge = "🟡 NO DISPONIBLE"
+                        else:
+                            bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
+                            badge = "🟢 DISPONIBLE"
+                            
+                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        with cc_card:
+                            st.markdown(f"""
+                            <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
+                                <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{caja}</div>
+                                <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge}</div>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with cc_btn:
+                            btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
+                            if st.button(btn_lbl, key=f"tv_nav_toggle_cj_{caja}", use_container_width=True):
+                                new_disp = 'NO' if disp == 'SI' else 'SI'
+                                run_query("UPDATE cajas SET disponible = ? WHERE caja = ?", (new_disp, caja))
+                                st.rerun()
+        render_tv_disponibilidad_nav()
 
 # ==============================================================================
 # 9. BLOQUE ADMIN & DEV
