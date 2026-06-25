@@ -583,9 +583,15 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
         </style>
         """, unsafe_allow_html=True)
     
+    is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+    if is_postgres:
+        db_status = '<span style="background-color: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #10b981; font-weight: bold; margin-left: 15px; vertical-align: middle;">☁️ BD: Nube</span>'
+    else:
+        db_status = '<span style="background-color: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #fca5a5; font-weight: bold; margin-left: 15px; vertical-align: middle;">⚠️ BD: SQLite Temporal</span>'
+
     c_title, c_date, c_refresh = st.columns([5, 3, 2])
     with c_title:
-        st.markdown("<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span></h2><style>@keyframes blink { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }</style>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span> {db_status}</h2><style>@keyframes blink {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}</style>", unsafe_allow_html=True)
     with c_date:
         tv_fecha = st.date_input("📅 Fecha Proyectada", value=get_local_now(), key="tv_only_fecha_input")
         tv_fecha_str = tv_fecha.strftime("%Y-%m-%d")
@@ -787,7 +793,12 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
 
 # --- NAVBAR ---
 logo_b64 = get_image_base64(LOGO_FILE); logo_html = f'<img src="{logo_b64}" style="height:35px;">' if logo_b64 else "🚛 "
-st.markdown(f'<div class="top-nav"><div>{logo_html} OTD FREIGHT</div><div>{APP_VERSION}</div></div>', unsafe_allow_html=True)
+is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+if is_postgres:
+    db_status = '<span style="background-color: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #10b981; font-weight: bold; margin-left: 15px;">☁️ BD: Nube (Postgres)</span>'
+else:
+    db_status = '<span style="background-color: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #fca5a5; font-weight: bold; margin-left: 15px;">⚠️ BD: Local Temporal (SQLite) - ¡Los datos se borrarán al reiniciar!</span>'
+st.markdown(f'<div class="top-nav"><div>{logo_html} OTD FREIGHT {db_status}</div><div>{APP_VERSION}</div></div>', unsafe_allow_html=True)
 
 # --- NAVEGACION ---
 c1, c2, c3, c4 = st.columns(4)
@@ -2075,9 +2086,15 @@ if st.session_state.menu_actual == "MODO_TV":
         """, unsafe_allow_html=True)
     
     # 2. Barra superior
+    is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
+    if is_postgres:
+        db_status = '<span style="background-color: rgba(16, 185, 129, 0.2); border: 1px solid #10b981; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #10b981; font-weight: bold; margin-left: 15px; vertical-align: middle;">☁️ BD: Nube</span>'
+    else:
+        db_status = '<span style="background-color: rgba(239, 68, 68, 0.2); border: 1px solid #ef4444; padding: 4px 10px; border-radius: 8px; font-size: 13px; color: #fca5a5; font-weight: bold; margin-left: 15px; vertical-align: middle;">⚠️ BD: SQLite Temporal</span>'
+
     c_title, c_date, c_refresh, c_exit = st.columns([4, 2, 2, 2])
     with c_title:
-        st.markdown("<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span></h2><style>@keyframes blink { 0% { opacity: 0.3; } 50% { opacity: 1; } 100% { opacity: 0.3; } }</style>", unsafe_allow_html=True)
+        st.markdown(f"<h2 style='margin:0; padding:0; color:#e2e8f0;'>📺 OTD Freight <span style='color:#10b981; font-size:16px; font-weight:bold; animation: blink 1.5s infinite;'>● EN VIVO</span> {db_status}</h2><style>@keyframes blink {{ 0% {{ opacity: 0.3; }} 50% {{ opacity: 1; }} 100% {{ opacity: 0.3; }} }}</style>", unsafe_allow_html=True)
     with c_date:
         tv_fecha = st.date_input("📅 Fecha Proyectada", value=get_local_now(), key="tv_fecha_input")
         tv_fecha_str = tv_fecha.strftime("%Y-%m-%d")
