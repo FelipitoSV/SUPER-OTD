@@ -1451,19 +1451,18 @@ if st.session_state.menu_actual == "OPERACIONES":
             conn_chof.close()
             ocupados = get_ocupados_hoy()
             if df_choferes.empty:
-                df_choferes = pd.DataFrame(columns=['nombre', 'tipo', 'disponible'])
-                
-            def get_chof_state(row):
-                name = row['nombre']
-                disp = row['disponible']
-                if name and name.upper() in ocupados:
-                    return "🔴 EN VIAJE"
-                elif disp == 'NO':
-                    return "🟡 NO DISPONIBLE"
-                else:
-                    return "🟢 DISPONIBLE"
-                    
-            df_choferes['Estado'] = df_choferes.apply(get_chof_state, axis=1)
+                df_choferes = pd.DataFrame(columns=['nombre', 'tipo', 'disponible', 'Estado'])
+            else:
+                def get_chof_state(row):
+                    name = row['nombre']
+                    disp = row['disponible']
+                    if name and name.upper() in ocupados:
+                        return "🔴 EN VIAJE"
+                    elif disp == 'NO':
+                        return "🟡 NO DISPONIBLE"
+                    else:
+                        return "🟢 DISPONIBLE"
+                df_choferes['Estado'] = df_choferes.apply(get_chof_state, axis=1)
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Choferes")
@@ -1581,19 +1580,18 @@ if st.session_state.menu_actual == "OPERACIONES":
             conn_cam.close()
             camiones_ocupados = get_camiones_ocupados_hoy()
             if df_camiones.empty:
-                df_camiones = pd.DataFrame(columns=['tracto', 'placas', 'disponible'])
-                
-            def get_camion_state(row):
-                tr = row['tracto']
-                disp = row['disponible']
-                if tr and tr.upper() in camiones_ocupados:
-                    return "🔴 EN VIAJE"
-                elif disp == 'NO':
-                    return "🟡 NO DISPONIBLE"
-                else:
-                    return "🟢 DISPONIBLE"
-                    
-            df_camiones['Estado'] = df_camiones.apply(get_camion_state, axis=1)
+                df_camiones = pd.DataFrame(columns=['tracto', 'placas', 'disponible', 'Estado'])
+            else:
+                def get_camion_state(row):
+                    tr = row['tracto']
+                    disp = row['disponible']
+                    if tr and tr.upper() in camiones_ocupados:
+                        return "🔴 EN VIAJE"
+                    elif disp == 'NO':
+                        return "🟡 NO DISPONIBLE"
+                    else:
+                        return "🟢 DISPONIBLE"
+                df_camiones['Estado'] = df_camiones.apply(get_camion_state, axis=1)
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Camiones")
@@ -1707,19 +1705,18 @@ if st.session_state.menu_actual == "OPERACIONES":
             conn_caj.close()
             cajas_ocupadas = get_cajas_ocupados_hoy()
             if df_cajas.empty:
-                df_cajas = pd.DataFrame(columns=['caja', 'disponible'])
-                
-            def get_caja_state(row):
-                cj = row['caja']
-                disp = row['disponible']
-                if cj and cj.upper() in cajas_ocupadas:
-                    return "🔴 EN VIAJE"
-                elif disp == 'NO':
-                    return "🟡 NO DISPONIBLE"
-                else:
-                    return "🟢 DISPONIBLE"
-                    
-            df_cajas['Estado'] = df_cajas.apply(get_caja_state, axis=1)
+                df_cajas = pd.DataFrame(columns=['caja', 'disponible', 'Estado'])
+            else:
+                def get_caja_state(row):
+                    cj = row['caja']
+                    disp = row['disponible']
+                    if cj and cj.upper() in cajas_ocupadas:
+                        return "🔴 EN VIAJE"
+                    elif disp == 'NO':
+                        return "🟡 NO DISPONIBLE"
+                    else:
+                        return "🟢 DISPONIBLE"
+                df_cajas['Estado'] = df_cajas.apply(get_caja_state, axis=1)
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Cajas")
