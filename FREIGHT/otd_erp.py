@@ -165,6 +165,19 @@ def get_local_now():
         pass
     return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=offset_hours)
 
+
+
+def get_local_now():
+    from datetime import timezone
+    offset_hours = -5
+    try:
+        res = run_query("SELECT valor FROM config WHERE clave='timezone_offset'")
+        if res:
+            offset_hours = float(res[0][0])
+    except:
+        pass
+    return datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=offset_hours)
+
 def run_query(query, params=()):
     is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
     
@@ -696,7 +709,7 @@ if st.session_state.menu_actual == "OPERACIONES":
             unsafe_allow_html=True
         )
 
-    tab1, tab_xml, tab2, tab3, tab4 = st.tabs(["📝 MANUAL", "📂 CARGA XML", "📊 DATA DEL DÍA (EDITABLE)", "📑 BOLETAS", "🚛 CHOFERES"])
+    tab1, tab_xml, tab2, tab3, tab4, tab_hist_viajes = st.tabs(["📝 MANUAL", "📂 CARGA XML", "📊 DATA DEL DÍA (EDITABLE)", "📑 BOLETAS", "🚛 CHOFERES", "🏆 HISTORIAL VIAJES"])
     
     # ------------------ REGISTRO MANUAL ------------------
     with tab1:
