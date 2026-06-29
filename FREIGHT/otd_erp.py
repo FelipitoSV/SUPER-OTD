@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.23 (Sandbox IP)" 
+APP_VERSION = "V2.24 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -2064,6 +2064,15 @@ if st.session_state.menu_actual == "VENCIMIENTOS":
 # 8. MÓDULO MANTENIMIENTO
 # ==============================================================================
 if st.session_state.menu_actual == "MANTENIMIENTO":
+    # Sincronizar dinámicamente con la flota registrada de camiones
+    run_query("DELETE FROM mantenimiento WHERE unidad NOT IN (SELECT tracto FROM camiones)")
+    run_query("""
+        INSERT INTO mantenimiento (unidad, ultimo_servicio_millas, intervalo_millas, fecha_servicio)
+        SELECT tracto, 0.0, 15000.0, ?
+        FROM camiones
+        WHERE tracto NOT IN (SELECT unidad FROM mantenimiento)
+    """, (get_local_now().strftime("%Y-%m-%d"),))
+
     st.markdown("### 🔧 Mantenimiento Preventivo")
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -2080,7 +2089,7 @@ if st.session_state.menu_actual == "MANTENIMIENTO":
     with c2:
         st.markdown("##### 📊 Estado de la Flota")
         conn_m = get_connection()
-        df_m = pd.read_sql_query("SELECT * FROM mantenimiento", conn_m)
+        df_m = pd.read_sql_query("SELECT * FROM mantenimiento ORDER BY unidad ASC", conn_m)
         conn_m.close()
         if not df_m.empty:
             for index, row in df_m.iterrows():
