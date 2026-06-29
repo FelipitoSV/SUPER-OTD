@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.20 (Sandbox IP)" 
+APP_VERSION = "V2.21 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -107,6 +107,38 @@ st.markdown(f"""
 
 # --- 5. DB & HELPERS ---
 import psycopg2
+import psycopg2.pool
+
+@st.cache_resource
+def get_postgres_pool(url):
+    # Pool de conexiones (Mínimo 1, Máximo 20)
+    return psycopg2.pool.ThreadedConnectionPool(1, 20, url)
+
+class CoercedConnection:
+    def __init__(self, conn, pool=None):
+        self._conn = conn
+        self._pool = pool
+        self._returned = False
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def close(self):
+        if not self._returned:
+            try:
+                if self._pool:
+                    self._pool.putconn(self._conn)
+                else:
+                    self._conn.close()
+            except:
+                try:
+                    self._conn.close()
+                except:
+                    pass
+            self._returned = True
+
+    def __del__(self):
+        self.close()
 
 def check_is_postgres():
     return "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"] and not st.session_state.get("use_postgres_fallback", False)
@@ -115,7 +147,15 @@ def get_connection():
     is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
     if is_postgres and not st.session_state.get("use_postgres_fallback", False):
         try:
-            return psycopg2.connect(st.secrets["postgres_url"])
+            pool = get_postgres_pool(st.secrets["postgres_url"].strip())
+            conn = pool.getconn()
+            if conn.closed:
+                try:
+                    pool.discard(conn)
+                except:
+                    pass
+                conn = pool.getconn()
+            return CoercedConnection(conn, pool)
         except Exception as e:
             err_msg = str(e)
             try:
@@ -128,9 +168,11 @@ def get_connection():
                 pass
             st.session_state.db_connection_error = err_msg
             st.session_state.use_postgres_fallback = True
-            return sqlite3.connect(DB_NAME)
+            sqlite_conn = sqlite3.connect(DB_NAME)
+            return CoercedConnection(sqlite_conn)
     else:
-        return sqlite3.connect(DB_NAME)
+        sqlite_conn = sqlite3.connect(DB_NAME)
+        return CoercedConnection(sqlite_conn)
 
 def translate_sqlite_to_postgres(query):
     query = query.replace("?", "%s")
@@ -200,6 +242,15 @@ def get_local_now():
 def run_query(query, params=()):
     is_postgres = check_is_postgres()
     
+    # Prevenir escritura en SQLite temporal para evitar pérdida de datos
+    ql = query.lower().strip()
+    is_write = ql.startswith("insert") or ql.startswith("update") or ql.startswith("delete")
+    if is_write and st.session_state.get("use_postgres_fallback", False):
+        blocked_tables = ["panel", "gastos", "boletas", "choferes", "camiones", "cajas", "vencimientos", "historial_vencimientos", "historial_panel", "mantenimiento", "notepad"]
+        if any(table in ql for table in blocked_tables):
+            st.error("⚠️ **Modo de Seguridad (Lectura):** La escritura de registros está deshabilitada en la base de datos temporal local para evitar la pérdida de tus datos. Restablece la conexión a la nube para poder guardar cambios.")
+            return False
+
     if is_postgres:
         query_translated = translate_sqlite_to_postgres(query)
         conn = get_connection()
@@ -823,7 +874,15 @@ else:
 st.markdown(f'<div class="top-nav"><div>{logo_html} OTD FREIGHT {db_status}</div><div>{APP_VERSION}</div></div>', unsafe_allow_html=True)
 
 if st.session_state.get("db_connection_error"):
-    st.error(f"❌ **Error al conectar a PostgreSQL (Base de Datos en la Nube):**\n\n`{st.session_state.db_connection_error}`\n\nEl sistema se ha redirigido automáticamente a la base de datos local **SQLite** temporal para evitar la caída del sistema. Ten en cuenta que los datos que ingreses se borrarán al reiniciar la aplicación.")
+    st.error(f"❌ **Error al conectar a PostgreSQL (Base de Datos en la Nube):**\n\n`{st.session_state.db_connection_error}`\n\nEl sistema se ha redirigido a la base de datos local **SQLite** temporal. **ATENCIÓN:** Para evitar pérdidas accidentales de información, la escritura, inserción y edición de registros ha sido deshabilitada de forma temporal hasta que se restablezca la conexión con la nube.")
+    if st.button("🔄 Intentar Reconectar a la Nube (PostgreSQL)"):
+        st.session_state.use_postgres_fallback = False
+        st.session_state.db_connection_error = None
+        try:
+            get_postgres_pool.clear()
+        except:
+            pass
+        st.rerun()
 
 # --- NAVEGACION ---
 c1, c2, c3, c4 = st.columns(4)
@@ -931,10 +990,10 @@ if st.session_state.menu_actual == "OPERACIONES":
             
             mon_g = "USD" if st.session_state.k_mov == "IMPORTACION" else "MXN"
             c_g = (19.25 if st.session_state.k_est=="CARGADO" else 13) if st.session_state.k_mov=="IMPORTACION" else (196 if st.session_state.k_est=="CARGADO" else 95)
-            run_query("INSERT INTO gastos VALUES (?,?,?,?,?,?,?,?)", (fecha_str, fac.upper(), tr.upper(), caj_final, st.session_state.k_est, op.upper(), c_g, mon_g))
+            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", (fecha_str, fac.upper(), tr.upper(), caj_final, st.session_state.k_est, op.upper(), c_g, mon_g))
             
             mc = "TARIMAS" if st.session_state.k_mov=="RECOLECCION TARIMAS" else ("EXPO" if st.session_state.k_mov=="EXPORTACION" else ("IMPO" if st.session_state.k_mov=="IMPORTACION" else "VACIA"))
-            run_query("INSERT INTO boletas VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (fecha_str, mc, f"{mc} {fac.upper()}", tr.upper(), caj_final, "", "", op.upper(), "", fol.upper(), "", ""))
+            run_query("INSERT INTO boletas (fecha, movimiento, descripcion, tracto, caja, d_caja, yarda, operador, sellos, folio_cp, boleta, cobro) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (fecha_str, mc, f"{mc} {fac.upper()}", tr.upper(), caj_final, "", "", op.upper(), "", fol.upper(), "", ""))
             smart_save_camion(tr, op)
             smart_save_caja(caj_final)
             st.toast("✅ Registrado Correctamente"); st.rerun()
@@ -991,7 +1050,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                     for idx, row in edited_xml.iterrows():
                         fechas_afectadas.add(row['Fecha'])
                         if row['Es Gasto']:
-                            run_query("INSERT INTO gastos VALUES (?,?,?,?,?,?,?,?)", 
+                            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", 
                                      (row['Fecha'], row['Factura'], row['Camión'], "N/A", "N/A", "PROVEEDOR", row['Total XML'], row['Moneda']))
                             c_gas += 1
                         else:
@@ -1025,7 +1084,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                             
                             mon_g = "USD" if row['Movimiento'] == "IMPORTACION" else "MXN"
                             c_g = (19.25 if row['Movimiento']=="IMPORTACION" else 196)
-                            run_query("INSERT INTO gastos VALUES (?,?,?,?,?,?,?,?)", 
+                            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", 
                                       (row['Fecha'], row['Factura'], row['Camión'], row['Caja'], "CARGADO", row['Chofer'], c_g, mon_g))
 
                         if row['Camión'] and row['Placas Detectadas']:
@@ -2347,7 +2406,7 @@ else:
         st.session_state.admin_unlocked = False
         st.rerun()
 
-    mode = st.radio("Herramienta:", ["EDITOR DE CÓDIGO", "RESTAURAR BACKUP", "🧪 ENTORNO SANDBOX"], horizontal=True)
+    mode = st.radio("Herramienta:", ["EDITOR DE CÓDIGO", "RESTAURAR BACKUP", "🧪 ENTORNO SANDBOX", "🧪 DIAGNÓSTICO BD"], horizontal=True)
     
     if mode == "EDITOR DE CÓDIGO":
         st.warning("⚠️ Editar este código afecta al sistema en vivo.")
@@ -2430,5 +2489,82 @@ else:
                     st.rerun()
             except Exception as e:
                 st.error(f"Error preparando el Sandbox: {e}")
+                
+    elif mode == "🧪 DIAGNÓSTICO BD":
+        st.markdown("#### 🧪 Diagnóstico de Conexión a Base de Datos")
+        
+        # 1. Verificar presencia de secrets
+        st.write("**Estado de st.secrets:**")
+        if "postgres_url" in st.secrets:
+            url_str = st.secrets["postgres_url"]
+            st.success("✅ `postgres_url` está configurado en st.secrets.")
+            
+            # Intentar parsear
+            try:
+                import urllib.parse
+                parsed = urllib.parse.urlparse(url_str)
+                st.write(f"- **Protocolo:** `{parsed.scheme}`")
+                st.write(f"- **Usuario:** `{parsed.username}`")
+                st.write(f"- **Servidor (Host):** `{parsed.hostname}`")
+                st.write(f"- **Puerto:** `{parsed.port}`")
+                st.write(f"- **Base de Datos:** `{parsed.path.replace('/', '')}`")
+                if parsed.password:
+                    pass_censored = parsed.password[0] + "*" * (len(parsed.password) - 2) + parsed.password[-1] if len(parsed.password) > 2 else "***"
+                    st.write(f"- **Contraseña:** `{pass_censored}` (Longitud: {len(parsed.password)})")
+                else:
+                    st.warning("⚠️ No se detectó contraseña en el URL.")
+            except Exception as pe:
+                st.error(f"Error al analizar el URL de conexión: {pe}")
+        else:
+            st.error("❌ `postgres_url` NO está configurado en st.secrets en Streamlit Cloud.")
+            st.info("Para solucionarlo, ve a la configuración de tu App en Streamlit Cloud (Settings -> Secrets) y pega el url de conexión.")
+
+        st.markdown("---")
+        
+        # 2. Pruebas activas
+        c_test1, c_test2 = st.columns(2)
+        with c_test1:
+            if st.button("🔍 Probar Conexión TCP/DNS a Supabase"):
+                if "postgres_url" in st.secrets:
+                    import socket
+                    try:
+                        import urllib.parse
+                        url_str = st.secrets["postgres_url"].strip()
+                        parsed = urllib.parse.urlparse(url_str)
+                        host = parsed.hostname
+                        port = parsed.port or 5432
+                        
+                        st.write(f"Intentando resolver IP de `{host}`...")
+                        addr_info = socket.getaddrinfo(host, port)
+                        st.success(f"✅ Resolvió correctamente. IPs encontradas:")
+                        for addr in addr_info:
+                            st.write(f"- `{addr[4][0]}` (Familia: {addr[0]}, Protocolo: {addr[2]})")
+                            
+                        st.write(f"Intentando abrir puerto TCP `{port}` en `{host}`...")
+                        s = socket.create_connection((host, port), timeout=5)
+                        s.close()
+                        st.success("✅ ¡Puerto TCP abierto con éxito! La red de Streamlit puede conectarse a Supabase.")
+                    except Exception as te:
+                        st.error(f"❌ Falló la prueba de red: {te}")
+                else:
+                    st.warning("No hay URL configurado para probar.")
+                    
+        with c_test2:
+            if st.button("🐘 Probar Conexión Completa Psycopg2"):
+                if "postgres_url" in st.secrets:
+                    try:
+                        url_str = st.secrets["postgres_url"].strip()
+                        st.write("Estableciendo conexión con psycopg2...")
+                        conn = psycopg2.connect(url_str)
+                        st.success("✅ ¡Conexión establecida con éxito!")
+                        c = conn.cursor()
+                        c.execute("SELECT version()")
+                        ver = c.fetchone()[0]
+                        st.write(f"Versión de base de datos: `{ver}`")
+                        conn.close()
+                    except Exception as pge:
+                        st.error(f"❌ Falló conexión con psycopg2: {pge}")
+                else:
+                    st.warning("No hay URL configurado para probar.")
             
 st.markdown('</div>', unsafe_allow_html=True)
