@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.22 (Sandbox IP)" 
+APP_VERSION = "V2.23 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -1069,22 +1069,63 @@ if st.session_state.menu_actual == "OPERACIONES":
                     man_badge = "<span style='background: rgba(16, 185, 129, 0.2); border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 5px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold;'>📋 MAN</span>" if man_val else ""
                     docs_badges = f"{cp_badge} {man_badge}".strip() if (cp_badge or man_badge) else "<span style='color: #64748b; font-size:12px;'>-</span>"
                     
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {bg_color}; color: {text_color}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border_color}; display: flex; align-items: center; min-height: 48px; margin-bottom: 8px; font-size: 14px;">
-                            <div style="flex: 1.2; font-weight: 500;">{time_str}</div>
-                            <div style="flex: 1.5; font-weight: bold; text-transform: uppercase;">{mov}</div>
-                            <div style="flex: 0.8; font-weight: 600;">{row['cliente']}</div>
-                            <div style="flex: 1.8; font-family: monospace; font-size: 13px;">{folio_factura}</div>
-                            <div style="flex: 2.2; font-weight: 600;">{row['chofer']}</div>
-                            <div style="flex: 0.8; font-weight: bold;">{row['camion']}</div>
-                            <div style="flex: 0.8; font-weight: bold;">{row['caja']}</div>
-                            <div style="flex: 2.2; font-size: 13px;">{row['destino'] or ''}</div>
-                            <div style="flex: 1.2; display: flex; gap: 4px; justify-content: center; align-items: center;">{docs_badges}</div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
-                    )
+                    # Layout en dos columnas: tarjeta e info en la izquierda, botón de completar en la derecha
+                    col_card, col_btn = st.columns([8.2, 1.8])
+                    
+                    with col_card:
+                        st.markdown(
+                            f"""
+                            <div style="background-color: {bg_color}; color: {text_color}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border_color}; display: flex; align-items: center; min-height: 48px; margin-bottom: 8px; font-size: 14px;">
+                                <div style="flex: 1.2; font-weight: 500;">{time_str}</div>
+                                <div style="flex: 1.5; font-weight: bold; text-transform: uppercase;">{mov}</div>
+                                <div style="flex: 0.8; font-weight: 600;">{row['cliente']}</div>
+                                <div style="flex: 1.8; font-family: monospace; font-size: 13px;">{folio_factura}</div>
+                                <div style="flex: 2.2; font-weight: 600;">{row['chofer']}</div>
+                                <div style="flex: 0.8; font-weight: bold;">{row['camion']}</div>
+                                <div style="flex: 0.8; font-weight: bold;">{row['caja']}</div>
+                                <div style="flex: 2.2; font-size: 13px;">{row['destino'] or ''}</div>
+                                <div style="flex: 1.2; display: flex; gap: 4px; justify-content: center; align-items: center;">{docs_badges}</div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
+                    
+                    with col_btn:
+                        st.write("") # Pequeño espacio para alinear con la tarjeta
+                        if st.button("🏆 Completar", key=f"btn_comp_card_{row['rowid']}", use_container_width=True):
+                            try:
+                                rid = row['rowid']
+                                rec = run_query(f"SELECT fecha, movimiento, cliente, operador, tracto, caja, factura, folio_cp, bascula, costo_final, moneda, ip_log, status_dia, ups, profepa, hora, carta_porte, manifiesto, destino FROM panel WHERE rowid={rid}")
+                                if rec:
+                                    row_data = rec[0]
+                                    fecha_comp = get_local_now().strftime("%Y-%m-%d %H:%M:%S")
+                                    
+                                    # Insert in historial
+                                    run_query("""INSERT INTO historial_panel 
+                                        (fecha, movimiento, cliente, operador, tracto, caja, factura, folio_cp, bascula, costo_final, moneda, ip_log, status_dia, ups, profepa, hora, carta_porte, manifiesto, destino, fecha_completado) 
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
+                                        row_data + (fecha_comp,))
+                                    
+                                    # Liberar chofer, camión y caja (disponible = 'SI')
+                                    chof_name = row['chofer']
+                                    cam_name = row['camion']
+                                    caj_name = row['caja']
+                                    
+                                    if chof_name:
+                                        run_query("UPDATE choferes SET disponible = 'SI' WHERE nombre = ?", (chof_name,))
+                                    if cam_name:
+                                        run_query("UPDATE camiones SET disponible = 'SI' WHERE tracto = ?", (cam_name,))
+                                    if caj_name and caj_name != "N/A":
+                                        run_query("UPDATE cajas SET disponible = 'SI' WHERE caja = ?", (caj_name,))
+                                        
+                                    # Eliminar de viajes activos
+                                    run_query(f"DELETE FROM panel WHERE rowid={rid}")
+                                    
+                                    st.toast(f"🏆 Viaje completado y recursos liberados.")
+                                    time.sleep(1)
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Error al completar: {e}")
             
             else: # Tabla Editable
                 df_editor = df_full.drop(columns=['ip_log', 'status_dia'], errors='ignore')
@@ -1215,9 +1256,21 @@ if st.session_state.menu_actual == "OPERACIONES":
                                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", 
                                 row_data + (fecha_comp,))
                             
+                            # Liberar recursos
+                            chof_name = row_data[3] # operador
+                            cam_name = row_data[4]  # tracto
+                            caj_name = row_data[5]  # caja
+                            
+                            if chof_name:
+                                run_query("UPDATE choferes SET disponible = 'SI' WHERE nombre = ?", (chof_name,))
+                            if cam_name:
+                                run_query("UPDATE camiones SET disponible = 'SI' WHERE tracto = ?", (cam_name,))
+                            if caj_name and caj_name != "N/A":
+                                run_query("UPDATE cajas SET disponible = 'SI' WHERE caja = ?", (caj_name,))
+
                             # Delete from panel
                             run_query(f"DELETE FROM panel WHERE rowid={id_completar}")
-                            st.toast(f"🏆 Viaje {id_completar} archivado en el historial.")
+                            st.toast(f"🏆 Viaje {id_completar} archivado en el historial y recursos liberados.")
                             time.sleep(1); st.rerun()
                     except Exception as e:
                         st.error(f"Error al archivar: {e}")
