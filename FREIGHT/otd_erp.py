@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.21 (Sandbox IP)" 
+APP_VERSION = "V2.22 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -929,7 +929,7 @@ if st.session_state.menu_actual == "OPERACIONES":
             unsafe_allow_html=True
         )
 
-    tab1, tab_xml, tab2, tab3, tab4, tab_hist_viajes = st.tabs(["📝 MANUAL", "📂 CARGA XML", "📊 DATA DEL DÍA (EDITABLE)", "📑 BOLETAS", "🚛 CHOFERES", "🏆 HISTORIAL VIAJES"])
+    tab1, tab2, tab3, tab4, tab_hist_viajes = st.tabs(["📝 MANUAL", "📊 DATA DEL DÍA (EDITABLE)", "📑 BOLETAS", "🚛 CHOFERES", "🏆 HISTORIAL VIAJES"])
     
     # ------------------ REGISTRO MANUAL ------------------
     with tab1:
@@ -998,109 +998,7 @@ if st.session_state.menu_actual == "OPERACIONES":
             smart_save_caja(caj_final)
             st.toast("✅ Registrado Correctamente"); st.rerun()
 
-    # ------------------ CARGA XML ------------------
-    with tab_xml:
-        st.info("Arrastra los XMLs.")
-        uploaded_files = st.file_uploader("Subir CFDI Carta Porte", type=["xml"], accept_multiple_files=True)
-        
-        if uploaded_files:
-            if "xml_cache" not in st.session_state: st.session_state.xml_cache = []
-            
-            if st.button(f"⚡ PROCESAR {len(uploaded_files)} ARCHIVOS"):
-                temp_data = []
-                flota_map = get_flota_map_placas() 
-                for f in uploaded_files:
-                    data = parse_cfdi_xml(f, flota_map)
-                    if data: temp_data.append(data)
-                st.session_state.xml_cache = temp_data
 
-            if st.session_state.get("xml_cache"):
-                st.markdown("##### 📝 Revisión y Edición antes de Guardar")
-                df_xml = pd.DataFrame(st.session_state.xml_cache)
-                all_tractos = [""] + get_camiones_list()
-                
-                edited_xml = st.data_editor(
-                    df_xml,
-                    column_config={
-                        "Camión": st.column_config.SelectboxColumn("Camión (Link)", options=all_tractos, required=True),
-                        "Chofer": st.column_config.SelectboxColumn("Chofer", options=[""] + get_choferes_list()),
-                        "Caja": st.column_config.SelectboxColumn("Caja", options=[""] + get_cajas_list()),
-                        "Movimiento": st.column_config.SelectboxColumn("Movimiento", options=["IMPORTACION", "EXPORTACION", "RECOLECCION TARIMAS", "TRANSFER"]),
-                        "Báscula": st.column_config.CheckboxColumn("⚖️ Báscula", default=False),
-                        "UPS": st.column_config.CheckboxColumn("📦 UPS (Info)", default=False),
-                        "Tarimas": st.column_config.CheckboxColumn("🪵 Tarimas", default=False),
-                        "Profepa": st.column_config.CheckboxColumn("🌲 PROFEPA", default=False),
-                        "Folio CP": st.column_config.TextColumn("Folio (XML)", disabled=True),
-                        "Factura": st.column_config.TextColumn("Factura (Manual)", required=True),
-                        "Es Gasto": st.column_config.CheckboxColumn("Es Gasto", disabled=True),
-                        "Fecha": st.column_config.TextColumn("Fecha XML", disabled=True),
-                        "carta_porte": st.column_config.CheckboxColumn("📄 Carta Porte", default=False),
-                        "manifiesto": st.column_config.CheckboxColumn("📋 Manifiesto", default=False),
-                    },
-                    hide_index=True, num_rows="fixed", use_container_width=True
-                )
-                
-                col_save, col_clear = st.columns([1,4])
-                
-                if col_save.button("💾 GUARDAR OPERACIONES", type="primary"):
-                    c_ops, c_gas = 0, 0
-                    fechas_afectadas = set()
-                    hora_actual = get_local_now().strftime("%H:%M:%S")
-                    
-                    for idx, row in edited_xml.iterrows():
-                        fechas_afectadas.add(row['Fecha'])
-                        if row['Es Gasto']:
-                            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", 
-                                     (row['Fecha'], row['Factura'], row['Camión'], "N/A", "N/A", "PROVEEDOR", row['Total XML'], row['Moneda']))
-                            c_gas += 1
-                        else:
-                            mov_final = "RECOLECCION TARIMAS" if row['Tarimas'] else row['Movimiento']
-                            costo_op = 0
-                            if row['Cliente'] == "VDO":
-                                sub_mxn = 135 * tc_val
-                                costo_op = sub_mxn * 1.12 if row['Movimiento'] == "IMPORTACION" else sub_mxn
-                            elif row['Cliente'] == "Kwalu":
-                                costo_op = 55 if row['Tarimas'] else 100
-                            
-                            moneda_db = "USD" if row['Cliente'] == "Kwalu" else "MXN"
-                            
-                            cp_val = "SI" if row.get('carta_porte') else "NO"
-                            man_val = "SI" if row.get('manifiesto') else "NO"
-                            
-                            run_query("""
-                                INSERT INTO panel (
-                                    fecha, movimiento, cliente, operador, tracto, caja, 
-                                    factura, folio_cp, bascula, costo_final, moneda, 
-                                    ip_log, status_dia, ups, profepa, hora, carta_porte, manifiesto, destino
-                                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                            """, (
-                                row['Fecha'], mov_final, row['Cliente'], row['Chofer'], 
-                                row['Camión'], row['Caja'], row['Factura'], row['Folio CP'], 
-                                "SI" if row['Báscula'] else "NO", costo_op, moneda_db, "XML-AUTO", "CONFIRMADO", 
-                                "SI" if row['UPS'] else "NO",
-                                "SI" if row['Profepa'] else "NO", hora_actual, cp_val, man_val, ""
-                            )) 
-                            c_ops += 1
-                            
-                            mon_g = "USD" if row['Movimiento'] == "IMPORTACION" else "MXN"
-                            c_g = (19.25 if row['Movimiento']=="IMPORTACION" else 196)
-                            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", 
-                                      (row['Fecha'], row['Factura'], row['Camión'], row['Caja'], "CARGADO", row['Chofer'], c_g, mon_g))
-
-                        if row['Camión'] and row['Placas Detectadas']:
-                            smart_save_camion(row['Camión'], row['Chofer'], row['Placas Detectadas'])
-                        if row.get('Caja'):
-                            smart_save_caja(row['Caja'])
-
-                    st.session_state.xml_cache = []
-                    st.balloons()
-                    msg_fechas = ", ".join(list(fechas_afectadas))
-                    st.success(f"✅ Guardado. Fechas: {msg_fechas}.")
-                    time.sleep(3); st.rerun()
-
-                if col_clear.button("❌ Limpiar"):
-                    st.session_state.xml_cache = []
-                    st.rerun()
 
     # ------------------ DATA DEL DIA (EDITABLE) ------------------
     with tab2:
