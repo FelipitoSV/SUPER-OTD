@@ -990,10 +990,10 @@ if st.session_state.menu_actual == "OPERACIONES":
             
             mon_g = "USD" if st.session_state.k_mov == "IMPORTACION" else "MXN"
             c_g = (19.25 if st.session_state.k_est=="CARGADO" else 13) if st.session_state.k_mov=="IMPORTACION" else (196 if st.session_state.k_est=="CARGADO" else 95)
-            run_query("INSERT INTO gastos VALUES (?,?,?,?,?,?,?,?)", (fecha_str, fac.upper(), tr.upper(), caj_final, st.session_state.k_est, op.upper(), c_g, mon_g))
+            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", (fecha_str, fac.upper(), tr.upper(), caj_final, st.session_state.k_est, op.upper(), c_g, mon_g))
             
             mc = "TARIMAS" if st.session_state.k_mov=="RECOLECCION TARIMAS" else ("EXPO" if st.session_state.k_mov=="EXPORTACION" else ("IMPO" if st.session_state.k_mov=="IMPORTACION" else "VACIA"))
-            run_query("INSERT INTO boletas VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (fecha_str, mc, f"{mc} {fac.upper()}", tr.upper(), caj_final, "", "", op.upper(), "", fol.upper(), "", ""))
+            run_query("INSERT INTO boletas (fecha, movimiento, descripcion, tracto, caja, d_caja, yarda, operador, sellos, folio_cp, boleta, cobro) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (fecha_str, mc, f"{mc} {fac.upper()}", tr.upper(), caj_final, "", "", op.upper(), "", fol.upper(), "", ""))
             smart_save_camion(tr, op)
             smart_save_caja(caj_final)
             st.toast("✅ Registrado Correctamente"); st.rerun()
@@ -1050,7 +1050,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                     for idx, row in edited_xml.iterrows():
                         fechas_afectadas.add(row['Fecha'])
                         if row['Es Gasto']:
-                            run_query("INSERT INTO gastos VALUES (?,?,?,?,?,?,?,?)", 
+                            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", 
                                      (row['Fecha'], row['Factura'], row['Camión'], "N/A", "N/A", "PROVEEDOR", row['Total XML'], row['Moneda']))
                             c_gas += 1
                         else:
@@ -1084,7 +1084,7 @@ if st.session_state.menu_actual == "OPERACIONES":
                             
                             mon_g = "USD" if row['Movimiento'] == "IMPORTACION" else "MXN"
                             c_g = (19.25 if row['Movimiento']=="IMPORTACION" else 196)
-                            run_query("INSERT INTO gastos VALUES (?,?,?,?,?,?,?,?)", 
+                            run_query("INSERT INTO gastos (fecha, factura, tracto, caja, estado, operador, costo_cruce, moneda) VALUES (?,?,?,?,?,?,?,?)", 
                                       (row['Fecha'], row['Factura'], row['Camión'], row['Caja'], "CARGADO", row['Chofer'], c_g, mon_g))
 
                         if row['Camión'] and row['Placas Detectadas']:
