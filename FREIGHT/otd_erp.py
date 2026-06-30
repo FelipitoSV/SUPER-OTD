@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.26 (Sandbox IP)" 
+APP_VERSION = "V2.27 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -2162,7 +2162,8 @@ if st.session_state.menu_actual == "MODO_TV":
     with tab_tv_viajes:
         @st.fragment(run_every=refresh_seconds)
         def render_tv_layout(fecha_filtro):
-            df_tv = cargar_dataframe("panel", fecha_filtro)
+            # Cargar todos los viajes activos (sin filtrar por fecha) para que se muestren hasta ser completados
+            df_tv = cargar_dataframe("panel", None)
             if not df_tv.empty:
                 st.markdown(
                     """
@@ -2207,10 +2208,19 @@ if st.session_state.menu_actual == "MODO_TV":
                     man_badge = "<span style='background: rgba(16, 185, 129, 0.25); border: 1px solid rgba(16, 185, 129, 0.45); padding: 2px 6px; border-radius: 4px; font-size: 11px; color:#6ee7b7; font-weight:bold;'>📋 MAN</span>" if row['manifiesto'] else ""
                     docs_badges = f"{cp_badge} {man_badge}".strip() if (cp_badge or man_badge) else "<span style='color: #64748b; font-size:13px;'>-</span>"
                     
+                    # Formatear la hora/fecha para mostrar de qué día es si es antiguo
+                    orig_fecha = row['fecha']
+                    orig_hora = row['hora']
+                    display_time = orig_hora
+                    if pd.notnull(orig_fecha):
+                        # Si no es del mismo día de hoy, anteponer fecha corta (MM-DD)
+                        if orig_fecha.date() != get_local_now().date():
+                            display_time = f"{orig_fecha.strftime('%m-%d')} {orig_hora}"
+
                     st.markdown(
                         f"""
                         <div style="background-color: {bg_color}; color: {text_color}; padding: 16px 20px; border-radius: 12px; border: 1px solid {border_color}; display: flex; align-items: center; min-height: 56px; margin-bottom: 10px; font-size: 16px;">
-                            <div style="flex: 0.8; font-weight: 500;">{row['hora']}</div>
+                            <div style="flex: 0.8; font-weight: 500;">{display_time}</div>
                             <div style="flex: 1.5; font-weight: bold; text-transform: uppercase; letter-spacing: 0.5px;">{mov}</div>
                             <div style="flex: 0.8; font-weight: 600;">{row['cliente']}</div>
                             <div style="flex: 1.8; font-family: monospace; font-size: 15px;">{folio_factura}</div>
@@ -2225,7 +2235,7 @@ if st.session_state.menu_actual == "MODO_TV":
                     )
                 st.caption(f"Última actualización automática: {get_local_now().strftime('%H:%M:%S')}")
             else:
-                st.info(f"No hay registros de viajes para el {fecha_filtro}.")
+                st.info("No hay viajes activos en el panel en este momento.")
                 
         render_tv_layout(tv_fecha_str)
 
