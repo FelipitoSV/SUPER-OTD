@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.24 (Sandbox IP)" 
+APP_VERSION = "V2.25 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -1883,7 +1883,7 @@ if st.session_state.menu_actual == "VENCIMIENTOS":
                     st.rerun()
 
         with col_view:
-            query = "SELECT id, unidad as 'UNIDAD', tipo as 'DOCUMENTO', fecha_venc as 'FECHA VENC' FROM vencimientos WHERE 1=1"
+            query = 'SELECT id, unidad as "UNIDAD", tipo as "DOCUMENTO", fecha_venc as "FECHA VENC" FROM vencimientos WHERE 1=1'
             params = []
             
             if f_uni and f_uni.strip() != "":
@@ -2016,7 +2016,7 @@ if st.session_state.menu_actual == "VENCIMIENTOS":
         with tab_hist:
             st.markdown("#### 📜 Historial de Vencimientos Completados")
             conn_hist = get_connection()
-            df_hist = pd.read_sql_query("SELECT id, unidad as 'UNIDAD', tipo as 'DOCUMENTO', fecha_venc as 'FECHA VENCIMIENTO', fecha_completado as 'FECHA COMPLETADO' FROM historial_vencimientos ORDER BY fecha_completado DESC", conn_hist)
+            df_hist = pd.read_sql_query('SELECT id, unidad as "UNIDAD", tipo as "DOCUMENTO", fecha_venc as "FECHA VENCIMIENTO", fecha_completado as "FECHA COMPLETADO" FROM historial_vencimientos ORDER BY fecha_completado DESC', conn_hist)
             conn_hist.close()
             if not df_hist.empty:
                 # Cabecera de Tarjetas
