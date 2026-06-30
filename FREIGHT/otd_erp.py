@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.27 (Sandbox IP)" 
+APP_VERSION = "V2.28 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -140,14 +140,24 @@ class CoercedConnection:
     def __del__(self):
         self.close()
 
+def get_postgres_url():
+    if "postgres_url" in st.secrets and st.secrets["postgres_url"]:
+        return st.secrets["postgres_url"].strip()
+    env_url = os.environ.get("postgres_url") or os.environ.get("POSTGRES_URL")
+    if env_url:
+        return env_url.strip()
+    return None
+
 def check_is_postgres():
-    return "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"] and not st.session_state.get("use_postgres_fallback", False)
+    url = get_postgres_url()
+    return url is not None and "[YOUR-PASSWORD]" not in url and not st.session_state.get("use_postgres_fallback", False)
 
 def get_connection():
-    is_postgres = "postgres_url" in st.secrets and st.secrets["postgres_url"] and "[YOUR-PASSWORD]" not in st.secrets["postgres_url"]
-    if is_postgres and not st.session_state.get("use_postgres_fallback", False):
+    is_postgres = check_is_postgres()
+    if is_postgres:
         try:
-            pool = get_postgres_pool(st.secrets["postgres_url"].strip())
+            url = get_postgres_url()
+            pool = get_postgres_pool(url)
             conn = pool.getconn()
             if conn.closed:
                 try:
@@ -160,7 +170,7 @@ def get_connection():
             err_msg = str(e)
             try:
                 import urllib.parse
-                url = st.secrets["postgres_url"]
+                url = get_postgres_url()
                 parsed = urllib.parse.urlparse(url)
                 if parsed.password:
                     err_msg = err_msg.replace(parsed.password, "****").replace(urllib.parse.quote_plus(parsed.password), "****")
@@ -2467,10 +2477,10 @@ else:
         st.markdown("#### 🧪 Diagnóstico de Conexión a Base de Datos")
         
         # 1. Verificar presencia de secrets
-        st.write("**Estado de st.secrets:**")
-        if "postgres_url" in st.secrets:
-            url_str = st.secrets["postgres_url"]
-            st.success("✅ `postgres_url` está configurado en st.secrets.")
+        st.write("**Estado de Configuración de BD:**")
+        url_str = get_postgres_url()
+        if url_str:
+            st.success("✅ La URL de conexión PostgreSQL está configurada (en st.secrets o variables de entorno).")
             
             # Intentar parsear
             try:
@@ -2489,8 +2499,8 @@ else:
             except Exception as pe:
                 st.error(f"Error al analizar el URL de conexión: {pe}")
         else:
-            st.error("❌ `postgres_url` NO está configurado en st.secrets en Streamlit Cloud.")
-            st.info("Para solucionarlo, ve a la configuración de tu App en Streamlit Cloud (Settings -> Secrets) y pega el url de conexión.")
+            st.error("❌ `postgres_url` NO está configurado (ni en st.secrets ni en variables de entorno).")
+            st.info("Para solucionarlo, ve a la configuración de tu App y define la variable o secreto 'postgres_url'.")
 
         st.markdown("---")
         
@@ -2498,7 +2508,8 @@ else:
         c_test1, c_test2 = st.columns(2)
         with c_test1:
             if st.button("🔍 Probar Conexión TCP/DNS a Supabase"):
-                if "postgres_url" in st.secrets:
+                url_str = get_postgres_url()
+                if url_str:
                     import socket
                     try:
                         import urllib.parse
