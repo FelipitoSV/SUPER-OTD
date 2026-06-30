@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.25 (Sandbox IP)" 
+APP_VERSION = "V2.26 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -891,13 +891,16 @@ if c2.button("🚨 VENCIMIENTOS", use_container_width=True): st.session_state.me
 if c3.button("🔧 MANTENIMIENTO", use_container_width=True): st.session_state.menu_actual = "MANTENIMIENTO"; st.rerun()
 if c4.button("📺 MODO TV", use_container_width=True): st.session_state.menu_actual = "MODO_TV"; st.rerun()
 
+# Bloc de Notas Global (visible en Operaciones, Vencimientos y Mantenimiento, abierto por defecto)
+if st.session_state.menu_actual != "MODO_TV":
+    with st.expander("📝 Bloc de Notas", expanded=True):
+        note_content = st.text_area("...", value=get_notepad_content(), height=80, key="notepad_area")
+        if st.button("💾 Guardar Nota"): save_notepad_content(note_content); st.toast("Guardado")
+
 # ==============================================================================
 # 6. MÓDULO OPERACIONES
 # ==============================================================================
 if st.session_state.menu_actual == "OPERACIONES":
-    with st.expander("📝 Bloc de Notas", expanded=False):
-        note_content = st.text_area("...", value=get_notepad_content(), height=80, key="notepad_area")
-        if st.button("💾 Guardar Nota"): save_notepad_content(note_content); st.toast("Guardado")
 
     col_stats, col_actions = st.columns([3, 1])
     with col_stats:
