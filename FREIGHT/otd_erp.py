@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.29 (Sandbox IP)" 
+APP_VERSION = "V2.30 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -662,7 +662,10 @@ def popup_editar_nota(tabla, columna_id, valor_id, nota_actual):
         st.success("Guardado correctamente.")
         time.sleep(0.5)
         st.rerun()
-    if c2.button("❌ Cancelar", use_container_width=True):
+    if c2.button("❌ Eliminar", use_container_width=True):
+        run_query(f"UPDATE {tabla} SET nota = '' WHERE {columna_id} = ?", (valor_id,))
+        st.success("Nota eliminada.")
+        time.sleep(0.5)
         st.rerun()
 
 # --- 0. CHECK MODO TV DIRECTO ---
