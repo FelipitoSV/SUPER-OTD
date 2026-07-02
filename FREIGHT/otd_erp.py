@@ -28,7 +28,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-APP_VERSION = "V2.28 (Sandbox IP)" 
+APP_VERSION = "V2.29 (Sandbox IP)" 
 ADMIN_PASSWORD = "2526"
 BACKUP_DIR = "backups"
 DB_NAME = "hydra_v1.db"
@@ -400,6 +400,9 @@ def init_db():
     if not check_col_exists("choferes", "disponible"): run_query("ALTER TABLE choferes ADD COLUMN disponible TEXT DEFAULT 'SI'")
     if not check_col_exists("camiones", "disponible"): run_query("ALTER TABLE camiones ADD COLUMN disponible TEXT DEFAULT 'SI'")
     if not check_col_exists("cajas", "disponible"): run_query("ALTER TABLE cajas ADD COLUMN disponible TEXT DEFAULT 'SI'")
+    if not check_col_exists("choferes", "nota"): run_query("ALTER TABLE choferes ADD COLUMN nota TEXT DEFAULT ''")
+    if not check_col_exists("camiones", "nota"): run_query("ALTER TABLE camiones ADD COLUMN nota TEXT DEFAULT ''")
+    if not check_col_exists("cajas", "nota"): run_query("ALTER TABLE cajas ADD COLUMN nota TEXT DEFAULT ''")
     if not check_col_exists("panel", "ups"): run_query("ALTER TABLE panel ADD COLUMN ups TEXT")
     if not check_col_exists("panel", "profepa"): run_query("ALTER TABLE panel ADD COLUMN profepa TEXT")
     if not check_col_exists("panel", "hora"): run_query("ALTER TABLE panel ADD COLUMN hora TEXT")
@@ -648,6 +651,20 @@ def popup_mantenimiento(unidad, millas_actuales):
         run_query("UPDATE mantenimiento SET ultimo_servicio_millas=?, fecha_servicio=? WHERE unidad=?", (millas_actuales, get_local_now().strftime("%Y-%m-%d"), unidad))
         st.success("Registrado"); st.rerun()
 
+@st.dialog("📝 Nota y Observaciones")
+def popup_editar_nota(tabla, columna_id, valor_id, nota_actual):
+    st.write(f"Editar notas para **{valor_id}**:")
+    nueva_nota = st.text_input("Nota / Comentario:", value=nota_actual, max_chars=120)
+    
+    c1, c2 = st.columns(2)
+    if c1.button("💾 Guardar", type="primary", use_container_width=True):
+        run_query(f"UPDATE {tabla} SET nota = ? WHERE {columna_id} = ?", (nueva_nota.strip(), valor_id))
+        st.success("Guardado correctamente.")
+        time.sleep(0.5)
+        st.rerun()
+    if c2.button("❌ Cancelar", use_container_width=True):
+        st.rerun()
+
 # --- 0. CHECK MODO TV DIRECTO ---
 if "tv" in st.query_params and st.query_params["tv"] == "true":
     st.markdown("""
@@ -762,31 +779,49 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
             # 1. Choferes
             with col1:
                 st.markdown("#### 👥 Choferes")
-                df_ch = pd.read_sql_query("SELECT nombre, tipo, disponible FROM choferes ORDER BY nombre ASC", get_connection())
+                df_ch = pd.read_sql_query("SELECT nombre, tipo, disponible, nota FROM choferes", get_connection())
                 ocupados = get_ocupados_hoy()
                 if df_ch.empty:
                     st.info("No hay choferes registrados.")
                 else:
+                    # Calcular Estado y Prioridad para ordenar
+                    def get_chof_state_priority(r):
+                        name = r['nombre']
+                        disp = r['disponible']
+                        if name and name.upper() in ocupados:
+                            return "🔴 EN VIAJE", 0
+                        elif disp == 'NO':
+                            return "🟡 NO DISPONIBLE", 1
+                        else:
+                            return "🟢 DISPONIBLE", 2
+                    
+                    states_priorities = df_ch.apply(get_chof_state_priority, axis=1)
+                    df_ch['Estado'] = [sp[0] for sp in states_priorities]
+                    df_ch['Prioridad'] = [sp[1] for sp in states_priorities]
+                    df_ch = df_ch.sort_values(by=['Prioridad', 'nombre'], ascending=[True, True])
+                    
                     for idx, row in df_ch.iterrows():
                         name = row['nombre']
                         disp = row['disponible']
+                        badge = row['Estado']
+                        nota = row.get('nota', '') or ''
                         
-                        if name and name.upper() in ocupados:
+                        if badge == "🔴 EN VIAJE":
                             bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
-                            badge = "🔴 EN VIAJE"
-                        elif disp == 'NO':
+                        elif badge == "🟡 NO DISPONIBLE":
                             bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                            badge = "🟡 NO DISPONIBLE"
                         else:
                             bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                            badge = "🟢 DISPONIBLE"
                             
-                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                        
+                        cc_card, cc_btn, cc_note = st.columns([3.2, 1.1, 0.7])
                         with cc_card:
                             st.markdown(f"""
                             <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
                                 <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{name}</div>
                                 <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} ({row['tipo']})</div>
+                                {note_html}
                             </div>
                             """, unsafe_allow_html=True)
                         with cc_btn:
@@ -795,36 +830,57 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
                                 new_disp = 'NO' if disp == 'SI' else 'SI'
                                 run_query("UPDATE choferes SET disponible = ? WHERE nombre = ?", (new_disp, name))
                                 st.rerun()
+                        with cc_note:
+                            if st.button("📝", key=f"tv_note_chof_{name}", use_container_width=True):
+                                popup_editar_nota("choferes", "nombre", name, nota)
 
             # 2. Camiones
             with col2:
                 st.markdown("#### 🚛 Camiones")
-                df_cam = pd.read_sql_query("SELECT tracto, placas, disponible FROM camiones ORDER BY tracto ASC", get_connection())
+                df_cam = pd.read_sql_query("SELECT tracto, placas, disponible, nota FROM camiones", get_connection())
                 camiones_ocupados = get_camiones_ocupados_hoy()
                 if df_cam.empty:
                     st.info("No hay camiones registrados.")
                 else:
+                    # Calcular Estado y Prioridad para ordenar
+                    def get_cam_state_priority(r):
+                        tr = r['tracto']
+                        disp = r['disponible']
+                        if tr and tr.upper() in camiones_ocupados:
+                            return "🔴 EN VIAJE", 0
+                        elif disp == 'NO':
+                            return "🟡 NO DISPONIBLE", 1
+                        else:
+                            return "🟢 DISPONIBLE", 2
+                            
+                    states_priorities = df_cam.apply(get_cam_state_priority, axis=1)
+                    df_cam['Estado'] = [sp[0] for sp in states_priorities]
+                    df_cam['Prioridad'] = [sp[1] for sp in states_priorities]
+                    df_cam = df_cam.sort_values(by=['Prioridad', 'tracto'], ascending=[True, True])
+                    
                     for idx, row in df_cam.iterrows():
                         tracto = row['tracto']
                         placas = row['placas'] or ''
                         disp = row['disponible']
+                        badge = row['Estado']
+                        nota = row.get('nota', '') or ''
                         
-                        if tracto and tracto.upper() in camiones_ocupados:
+                        if badge == "🔴 EN VIAJE":
                             bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
-                            badge = "🔴 EN VIAJE"
-                        elif disp == 'NO':
+                        elif badge == "🟡 NO DISPONIBLE":
                             bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                            badge = "🟡 NO DISPONIBLE"
                         else:
                             bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                            badge = "🟢 DISPONIBLE"
                             
-                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                        
+                        cc_card, cc_btn, cc_note = st.columns([3.2, 1.1, 0.7])
                         with cc_card:
                             st.markdown(f"""
                             <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
                                 <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{tracto}</div>
                                 <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} {f'({placas})' if placas else ''}</div>
+                                {note_html}
                             </div>
                             """, unsafe_allow_html=True)
                         with cc_btn:
@@ -833,35 +889,56 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
                                 new_disp = 'NO' if disp == 'SI' else 'SI'
                                 run_query("UPDATE camiones SET disponible = ? WHERE tracto = ?", (new_disp, tracto))
                                 st.rerun()
+                        with cc_note:
+                            if st.button("📝", key=f"tv_note_cam_{tracto}", use_container_width=True):
+                                popup_editar_nota("camiones", "tracto", tracto, nota)
 
             # 3. Cajas
             with col3:
                 st.markdown("#### 📦 Cajas")
-                df_cj = pd.read_sql_query("SELECT caja, disponible FROM cajas ORDER BY caja ASC", get_connection())
+                df_cj = pd.read_sql_query("SELECT caja, disponible, nota FROM cajas", get_connection())
                 cajas_ocupadas = get_cajas_ocupados_hoy()
                 if df_cj.empty:
                     st.info("No hay cajas registradas.")
                 else:
+                    # Calcular Estado y Prioridad para ordenar
+                    def get_caj_state_priority(r):
+                        cj = r['caja']
+                        disp = r['disponible']
+                        if cj and cj.upper() in cajas_ocupadas:
+                            return "🔴 EN VIAJE", 0
+                        elif disp == 'NO':
+                            return "🟡 NO DISPONIBLE", 1
+                        else:
+                            return "🟢 DISPONIBLE", 2
+                            
+                    states_priorities = df_cj.apply(get_caj_state_priority, axis=1)
+                    df_cj['Estado'] = [sp[0] for sp in states_priorities]
+                    df_cj['Prioridad'] = [sp[1] for sp in states_priorities]
+                    df_cj = df_cj.sort_values(by=['Prioridad', 'caja'], ascending=[True, True])
+                    
                     for idx, row in df_cj.iterrows():
                         caja = row['caja']
                         disp = row['disponible']
+                        badge = row['Estado']
+                        nota = row.get('nota', '') or ''
                         
-                        if caja and caja.upper() in cajas_ocupadas:
+                        if badge == "🔴 EN VIAJE":
                             bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
-                            badge = "🔴 EN VIAJE"
-                        elif disp == 'NO':
+                        elif badge == "🟡 NO DISPONIBLE":
                             bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                            badge = "🟡 NO DISPONIBLE"
                         else:
                             bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                            badge = "🟢 DISPONIBLE"
                             
-                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                        
+                        cc_card, cc_btn, cc_note = st.columns([3.2, 1.1, 0.7])
                         with cc_card:
                             st.markdown(f"""
                             <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
                                 <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{caja}</div>
                                 <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge}</div>
+                                {note_html}
                             </div>
                             """, unsafe_allow_html=True)
                         with cc_btn:
@@ -870,6 +947,9 @@ if "tv" in st.query_params and st.query_params["tv"] == "true":
                                 new_disp = 'NO' if disp == 'SI' else 'SI'
                                 run_query("UPDATE cajas SET disponible = ? WHERE caja = ?", (new_disp, caja))
                                 st.rerun()
+                        with cc_note:
+                            if st.button("📝", key=f"tv_note_caj_{caja}", use_container_width=True):
+                                popup_editar_nota("cajas", "caja", caja, nota)
         render_tv_disponibilidad()
     
     st.stop()
@@ -1470,22 +1550,27 @@ if st.session_state.menu_actual == "OPERACIONES":
                     st.rerun()
             
             conn_chof = get_connection()
-            df_choferes = pd.read_sql_query("SELECT nombre, tipo, disponible FROM choferes ORDER BY nombre ASC", conn_chof)
+            df_choferes = pd.read_sql_query("SELECT nombre, tipo, disponible, nota FROM choferes", conn_chof)
             conn_chof.close()
             ocupados = get_ocupados_hoy()
             if df_choferes.empty:
-                df_choferes = pd.DataFrame(columns=['nombre', 'tipo', 'disponible', 'Estado'])
+                df_choferes = pd.DataFrame(columns=['nombre', 'tipo', 'disponible', 'nota', 'Estado', 'Prioridad'])
             else:
-                def get_chof_state(row):
+                def get_chof_state_priority(row):
                     name = row['nombre']
                     disp = row['disponible']
                     if name and name.upper() in ocupados:
-                        return "🔴 EN VIAJE"
+                        return "🔴 EN VIAJE", 0
                     elif disp == 'NO':
-                        return "🟡 NO DISPONIBLE"
+                        return "🟡 NO DISPONIBLE", 1
                     else:
-                        return "🟢 DISPONIBLE"
-                df_choferes['Estado'] = df_choferes.apply(get_chof_state, axis=1)
+                        return "🟢 DISPONIBLE", 2
+                
+                states_priorities = df_choferes.apply(get_chof_state_priority, axis=1)
+                df_choferes['Estado'] = [sp[0] for sp in states_priorities]
+                df_choferes['Prioridad'] = [sp[1] for sp in states_priorities]
+                # Ordenar por Prioridad (Rojo -> Amarillo -> Verde) y luego por nombre
+                df_choferes = df_choferes.sort_values(by=['Prioridad', 'nombre'], ascending=[True, True])
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Choferes")
@@ -1503,6 +1588,8 @@ if st.session_state.menu_actual == "OPERACIONES":
                 for idx, row in df_choferes.iterrows():
                     estado = row['Estado']
                     disp = row['disponible']
+                    name = row['nombre']
+                    nota = row.get('nota', '') or ''
                     
                     if "🟢 DISPONIBLE" in estado:
                         bg, txt, border = "rgba(16, 185, 129, 0.08)", "#6ee7b7", "rgba(16, 185, 129, 0.2)"
@@ -1514,24 +1601,32 @@ if st.session_state.menu_actual == "OPERACIONES":
                         bg, txt, border = "rgba(245, 158, 11, 0.08)", "#fcd34d", "rgba(245, 158, 11, 0.2)"
                         badge = "<span style='color: #f59e0b; font-weight: bold;'>● NO DISPO</span>"
                     
-                    c_card, c_btn = st.columns([3.5, 1.5])
+                    note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 4px; width: 100%; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                    
+                    c_card, c_btn, c_note = st.columns([3.2, 1.1, 0.7])
                     with c_card:
                         st.markdown(
                             f"""
-                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; font-size: 13px;">
-                                <div style="flex: 2.2; font-weight: 600; text-transform: uppercase;">{row['nombre']}</div>
-                                <div style="flex: 1; font-weight: bold; font-size: 11px; opacity: 0.85;">{row['tipo']}</div>
-                                <div style="flex: 1.5; text-align: right; font-size: 11px;">{badge}</div>
+                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 38px; font-size: 13px; margin-bottom: 8px;">
+                                <div style="display: flex; align-items: center; width: 100%;">
+                                    <div style="flex: 2.2; font-weight: 600; text-transform: uppercase;">{name}</div>
+                                    <div style="flex: 1; font-weight: bold; font-size: 11px; opacity: 0.85;">{row['tipo']}</div>
+                                    <div style="flex: 1.5; text-align: right; font-size: 11px;">{badge}</div>
+                                </div>
+                                {note_html}
                             </div>
                             """,
                             unsafe_allow_html=True
                         )
                     with c_btn:
                         btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
-                        if st.button(btn_lbl, key=f"btn_toggle_chof_{row['nombre']}", use_container_width=True):
+                        if st.button(btn_lbl, key=f"btn_toggle_chof_{name}", use_container_width=True):
                             new_disp = 'NO' if disp == 'SI' else 'SI'
-                            run_query("UPDATE choferes SET disponible = ? WHERE nombre = ?", (new_disp, row['nombre']))
+                            run_query("UPDATE choferes SET disponible = ? WHERE nombre = ?", (new_disp, name))
                             st.rerun()
+                    with c_note:
+                        if st.button("📝", key=f"btn_note_chof_{name}", use_container_width=True):
+                            popup_editar_nota("choferes", "nombre", name, nota)
             else:
                 st.markdown("##### 📝 Editar Choferes de Forma Manual")
                 
@@ -1575,9 +1670,13 @@ if st.session_state.menu_actual == "OPERACIONES":
                 
                 if not orig_compare.equals(edited_compare):
                     try:
+                        # Pre-cargar notas existentes para no perderlas
+                        notes_dict = {row['nombre']: row.get('nota', '') for _, row in df_choferes.iterrows()}
                         run_query("DELETE FROM choferes")
                         for idx, row in edited_compare.iterrows():
-                            run_query("INSERT OR IGNORE INTO choferes (nombre, tipo, disponible) VALUES (?, ?, ?)", (row['Chofer'], row['Tipo'], row['Disponible']))
+                            ch_name = row['Chofer']
+                            old_note = notes_dict.get(ch_name, '')
+                            run_query("INSERT OR IGNORE INTO choferes (nombre, tipo, disponible, nota) VALUES (?, ?, ?, ?)", (ch_name, row['Tipo'], row['Disponible'], old_note))
                         st.toast("✅ Cambios en choferes guardados.")
                         time.sleep(0.5)
                         st.rerun()
@@ -1599,22 +1698,27 @@ if st.session_state.menu_actual == "OPERACIONES":
                     st.rerun()
             
             conn_cam = get_connection()
-            df_camiones = pd.read_sql_query("SELECT tracto, placas, disponible FROM camiones ORDER BY tracto ASC", conn_cam)
+            df_camiones = pd.read_sql_query("SELECT tracto, placas, disponible, nota FROM camiones", conn_cam)
             conn_cam.close()
             camiones_ocupados = get_camiones_ocupados_hoy()
             if df_camiones.empty:
-                df_camiones = pd.DataFrame(columns=['tracto', 'placas', 'disponible', 'Estado'])
+                df_camiones = pd.DataFrame(columns=['tracto', 'placas', 'disponible', 'nota', 'Estado', 'Prioridad'])
             else:
-                def get_camion_state(row):
+                def get_camion_state_priority(row):
                     tr = row['tracto']
                     disp = row['disponible']
                     if tr and tr.upper() in camiones_ocupados:
-                        return "🔴 EN VIAJE"
+                        return "🔴 EN VIAJE", 0
                     elif disp == 'NO':
-                        return "🟡 NO DISPONIBLE"
+                        return "🟡 NO DISPONIBLE", 1
                     else:
-                        return "🟢 DISPONIBLE"
-                df_camiones['Estado'] = df_camiones.apply(get_camion_state, axis=1)
+                        return "🟢 DISPONIBLE", 2
+                
+                states_priorities = df_camiones.apply(get_camion_state_priority, axis=1)
+                df_camiones['Estado'] = [sp[0] for sp in states_priorities]
+                df_camiones['Prioridad'] = [sp[1] for sp in states_priorities]
+                # Ordenar por Prioridad (Rojo -> Amarillo -> Verde) y luego por tracto
+                df_camiones = df_camiones.sort_values(by=['Prioridad', 'tracto'], ascending=[True, True])
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Camiones")
@@ -1632,6 +1736,8 @@ if st.session_state.menu_actual == "OPERACIONES":
                 for idx, row in df_camiones.iterrows():
                     estado = row['Estado']
                     disp = row['disponible']
+                    tracto = row['tracto']
+                    nota = row.get('nota', '') or ''
                     
                     if "🟢 DISPONIBLE" in estado:
                         bg, txt, border = "rgba(16, 185, 129, 0.08)", "#6ee7b7", "rgba(16, 185, 129, 0.2)"
@@ -1643,24 +1749,32 @@ if st.session_state.menu_actual == "OPERACIONES":
                         bg, txt, border = "rgba(245, 158, 11, 0.08)", "#fcd34d", "rgba(245, 158, 11, 0.2)"
                         badge = "<span style='color: #f59e0b; font-weight: bold;'>● NO DISPO</span>"
                     
-                    c_card, c_btn = st.columns([3.5, 1.5])
+                    note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 4px; width: 100%; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                    
+                    c_card, c_btn, c_note = st.columns([3.2, 1.1, 0.7])
                     with c_card:
                         st.markdown(
                             f"""
-                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; font-size: 13px;">
-                                <div style="flex: 1.2; font-weight: bold; text-transform: uppercase;">{row['tracto']}</div>
-                                <div style="flex: 1.8; font-family: monospace; font-size: 11px;">{row['placas'] or ''}</div>
-                                <div style="flex: 1.5; text-align: right; font-size: 11px;">{badge}</div>
+                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 38px; font-size: 13px; margin-bottom: 8px;">
+                                <div style="display: flex; align-items: center; width: 100%;">
+                                    <div style="flex: 1.2; font-weight: bold; text-transform: uppercase;">{tracto}</div>
+                                    <div style="flex: 1.8; font-family: monospace; font-size: 11px;">{row['placas'] or ''}</div>
+                                    <div style="flex: 1.5; text-align: right; font-size: 11px;">{badge}</div>
+                                </div>
+                                {note_html}
                             </div>
                             """,
                             unsafe_allow_html=True
                         )
                     with c_btn:
                         btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
-                        if st.button(btn_lbl, key=f"btn_toggle_cam_{row['tracto']}", use_container_width=True):
+                        if st.button(btn_lbl, key=f"btn_toggle_cam_{tracto}", use_container_width=True):
                             new_disp = 'NO' if disp == 'SI' else 'SI'
-                            run_query("UPDATE camiones SET disponible = ? WHERE tracto = ?", (new_disp, row['tracto']))
+                            run_query("UPDATE camiones SET disponible = ? WHERE tracto = ?", (new_disp, tracto))
                             st.rerun()
+                    with c_note:
+                        if st.button("📝", key=f"btn_note_cam_{tracto}", use_container_width=True):
+                            popup_editar_nota("camiones", "tracto", tracto, nota)
             else:
                 st.markdown("##### 📝 Editar Camiones de Forma Manual")
                 
@@ -1704,9 +1818,13 @@ if st.session_state.menu_actual == "OPERACIONES":
                 
                 if not orig_compare.equals(edited_compare):
                     try:
+                        # Pre-cargar notas existentes para no perderlas
+                        notes_dict = {row['tracto']: row.get('nota', '') for _, row in df_camiones.iterrows()}
                         run_query("DELETE FROM camiones")
                         for idx, row in edited_compare.iterrows():
-                            run_query("INSERT OR IGNORE INTO camiones (tracto, placas, disponible) VALUES (?, ?, ?)", (row['Camión'], row['Placas'], row['Disponible']))
+                            tr_name = row['Camión']
+                            old_note = notes_dict.get(tr_name, '')
+                            run_query("INSERT OR IGNORE INTO camiones (tracto, placas, disponible, nota) VALUES (?, ?, ?, ?)", (tr_name, row['Placas'], row['Disponible'], old_note))
                         st.toast("✅ Cambios en camiones guardados.")
                         time.sleep(0.5)
                         st.rerun()
@@ -1724,22 +1842,27 @@ if st.session_state.menu_actual == "OPERACIONES":
                     st.rerun()
             
             conn_caj = get_connection()
-            df_cajas = pd.read_sql_query("SELECT caja, disponible FROM cajas ORDER BY caja ASC", conn_caj)
+            df_cajas = pd.read_sql_query("SELECT caja, disponible, nota FROM cajas", conn_caj)
             conn_caj.close()
             cajas_ocupadas = get_cajas_ocupados_hoy()
             if df_cajas.empty:
-                df_cajas = pd.DataFrame(columns=['caja', 'disponible', 'Estado'])
+                df_cajas = pd.DataFrame(columns=['caja', 'disponible', 'nota', 'Estado', 'Prioridad'])
             else:
-                def get_caja_state(row):
+                def get_caja_state_priority(row):
                     cj = row['caja']
                     disp = row['disponible']
                     if cj and cj.upper() in cajas_ocupadas:
-                        return "🔴 EN VIAJE"
+                        return "🔴 EN VIAJE", 0
                     elif disp == 'NO':
-                        return "🟡 NO DISPONIBLE"
+                        return "🟡 NO DISPONIBLE", 1
                     else:
-                        return "🟢 DISPONIBLE"
-                df_cajas['Estado'] = df_cajas.apply(get_caja_state, axis=1)
+                        return "🟢 DISPONIBLE", 2
+                
+                states_priorities = df_cajas.apply(get_caja_state_priority, axis=1)
+                df_cajas['Estado'] = [sp[0] for sp in states_priorities]
+                df_cajas['Prioridad'] = [sp[1] for sp in states_priorities]
+                # Ordenar por Prioridad (Rojo -> Amarillo -> Verde) y luego por caja
+                df_cajas = df_cajas.sort_values(by=['Prioridad', 'caja'], ascending=[True, True])
             
             if vista_flota == "🎴 Vista de Tarjetas":
                 st.markdown("##### 🎴 Disponibilidad de Cajas")
@@ -1756,6 +1879,8 @@ if st.session_state.menu_actual == "OPERACIONES":
                 for idx, row in df_cajas.iterrows():
                     estado = row['Estado']
                     disp = row['disponible']
+                    caja = row['caja']
+                    nota = row.get('nota', '') or ''
                     
                     if "🟢 DISPONIBLE" in estado:
                         bg, txt, border = "rgba(16, 185, 129, 0.08)", "#6ee7b7", "rgba(16, 185, 129, 0.2)"
@@ -1767,23 +1892,31 @@ if st.session_state.menu_actual == "OPERACIONES":
                         bg, txt, border = "rgba(245, 158, 11, 0.08)", "#fcd34d", "rgba(245, 158, 11, 0.2)"
                         badge = "<span style='color: #f59e0b; font-weight: bold;'>● NO DISPO</span>"
                     
-                    c_card, c_btn = st.columns([3.5, 1.5])
+                    note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 4px; width: 100%; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                    
+                    c_card, c_btn, c_note = st.columns([3.2, 1.1, 0.7])
                     with c_card:
                         st.markdown(
                             f"""
-                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; align-items: center; min-height: 38px; font-size: 13px;">
-                                <div style="flex: 2.2; font-weight: bold; text-transform: uppercase;">{row['caja']}</div>
-                                <div style="flex: 1.8; text-align: right; font-size: 11px;">{badge}</div>
+                            <div style="background-color: {bg}; color: {txt}; padding: 8px 12px; border-radius: 8px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 38px; font-size: 13px; margin-bottom: 8px;">
+                                <div style="display: flex; align-items: center; width: 100%;">
+                                    <div style="flex: 2.2; font-weight: bold; text-transform: uppercase;">{caja}</div>
+                                    <div style="flex: 1.8; text-align: right; font-size: 11px;">{badge}</div>
+                                </div>
+                                {note_html}
                             </div>
                             """,
                             unsafe_allow_html=True
                         )
                     with c_btn:
                         btn_lbl = "🔴 Desact." if disp == 'SI' else "🟢 Activar"
-                        if st.button(btn_lbl, key=f"btn_toggle_caj_{row['caja']}", use_container_width=True):
+                        if st.button(btn_lbl, key=f"btn_toggle_caj_{caja}", use_container_width=True):
                             new_disp = 'NO' if disp == 'SI' else 'SI'
-                            run_query("UPDATE cajas SET disponible = ? WHERE caja = ?", (new_disp, row['caja']))
+                            run_query("UPDATE cajas SET disponible = ? WHERE caja = ?", (new_disp, caja))
                             st.rerun()
+                    with c_note:
+                        if st.button("📝", key=f"btn_note_caj_{caja}", use_container_width=True):
+                            popup_editar_nota("cajas", "caja", caja, nota)
             else:
                 st.markdown("##### 📝 Editar Cajas de Forma Manual")
                 
@@ -1823,9 +1956,13 @@ if st.session_state.menu_actual == "OPERACIONES":
                 
                 if not orig_compare.equals(edited_compare):
                     try:
+                        # Pre-cargar notas existentes para no perderlas
+                        notes_dict = {row['caja']: row.get('nota', '') for _, row in df_cajas.iterrows()}
                         run_query("DELETE FROM cajas")
                         for idx, row in edited_compare.iterrows():
-                            run_query("INSERT OR IGNORE INTO cajas (caja, disponible) VALUES (?, ?)", (row['Caja'], row['Disponible']))
+                            cj_name = row['Caja']
+                            old_note = notes_dict.get(cj_name, '')
+                            run_query("INSERT OR IGNORE INTO cajas (caja, disponible, nota) VALUES (?, ?, ?)", (cj_name, row['Disponible'], old_note))
                         st.toast("✅ Cambios en cajas guardados.")
                         time.sleep(0.5)
                         st.rerun()
@@ -2257,31 +2394,49 @@ if st.session_state.menu_actual == "MODO_TV":
             # 1. Choferes
             with col1:
                 st.markdown("#### 👥 Choferes")
-                df_ch = pd.read_sql_query("SELECT nombre, tipo, disponible FROM choferes ORDER BY nombre ASC", get_connection())
+                df_ch = pd.read_sql_query("SELECT nombre, tipo, disponible, nota FROM choferes", get_connection())
                 ocupados = get_ocupados_hoy()
                 if df_ch.empty:
                     st.info("No hay choferes registrados.")
                 else:
+                    # Calcular Estado y Prioridad para ordenar
+                    def get_chof_state_priority(r):
+                        name = r['nombre']
+                        disp = r['disponible']
+                        if name and name.upper() in ocupados:
+                            return "🔴 EN VIAJE", 0
+                        elif disp == 'NO':
+                            return "🟡 NO DISPONIBLE", 1
+                        else:
+                            return "🟢 DISPONIBLE", 2
+                    
+                    states_priorities = df_ch.apply(get_chof_state_priority, axis=1)
+                    df_ch['Estado'] = [sp[0] for sp in states_priorities]
+                    df_ch['Prioridad'] = [sp[1] for sp in states_priorities]
+                    df_ch = df_ch.sort_values(by=['Prioridad', 'nombre'], ascending=[True, True])
+                    
                     for idx, row in df_ch.iterrows():
                         name = row['nombre']
                         disp = row['disponible']
+                        badge = row['Estado']
+                        nota = row.get('nota', '') or ''
                         
-                        if name and name.upper() in ocupados:
+                        if badge == "🔴 EN VIAJE":
                             bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
-                            badge = "🔴 EN VIAJE"
-                        elif disp == 'NO':
+                        elif badge == "🟡 NO DISPONIBLE":
                             bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                            badge = "🟡 NO DISPONIBLE"
                         else:
                             bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                            badge = "🟢 DISPONIBLE"
                             
-                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                        
+                        cc_card, cc_btn, cc_note = st.columns([3.2, 1.1, 0.7])
                         with cc_card:
                             st.markdown(f"""
                             <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
                                 <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{name}</div>
                                 <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} ({row['tipo']})</div>
+                                {note_html}
                             </div>
                             """, unsafe_allow_html=True)
                         with cc_btn:
@@ -2290,36 +2445,57 @@ if st.session_state.menu_actual == "MODO_TV":
                                 new_disp = 'NO' if disp == 'SI' else 'SI'
                                 run_query("UPDATE choferes SET disponible = ? WHERE nombre = ?", (new_disp, name))
                                 st.rerun()
+                        with cc_note:
+                            if st.button("📝", key=f"tv_nav_note_chof_{name}", use_container_width=True):
+                                popup_editar_nota("choferes", "nombre", name, nota)
 
             # 2. Camiones
             with col2:
                 st.markdown("#### 🚛 Camiones")
-                df_cam = pd.read_sql_query("SELECT tracto, placas, disponible FROM camiones ORDER BY tracto ASC", get_connection())
+                df_cam = pd.read_sql_query("SELECT tracto, placas, disponible, nota FROM camiones", get_connection())
                 camiones_ocupados = get_camiones_ocupados_hoy()
                 if df_cam.empty:
                     st.info("No hay camiones registrados.")
                 else:
+                    # Calcular Estado y Prioridad para ordenar
+                    def get_cam_state_priority(r):
+                        tr = r['tracto']
+                        disp = r['disponible']
+                        if tr and tr.upper() in camiones_ocupados:
+                            return "🔴 EN VIAJE", 0
+                        elif disp == 'NO':
+                            return "🟡 NO DISPONIBLE", 1
+                        else:
+                            return "🟢 DISPONIBLE", 2
+                            
+                    states_priorities = df_cam.apply(get_cam_state_priority, axis=1)
+                    df_cam['Estado'] = [sp[0] for sp in states_priorities]
+                    df_cam['Prioridad'] = [sp[1] for sp in states_priorities]
+                    df_cam = df_cam.sort_values(by=['Prioridad', 'tracto'], ascending=[True, True])
+                    
                     for idx, row in df_cam.iterrows():
                         tracto = row['tracto']
                         placas = row['placas'] or ''
                         disp = row['disponible']
+                        badge = row['Estado']
+                        nota = row.get('nota', '') or ''
                         
-                        if tracto and tracto.upper() in camiones_ocupados:
+                        if badge == "🔴 EN VIAJE":
                             bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
-                            badge = "🔴 EN VIAJE"
-                        elif disp == 'NO':
+                        elif badge == "🟡 NO DISPONIBLE":
                             bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                            badge = "🟡 NO DISPONIBLE"
                         else:
                             bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                            badge = "🟢 DISPONIBLE"
                             
-                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                        
+                        cc_card, cc_btn, cc_note = st.columns([3.2, 1.1, 0.7])
                         with cc_card:
                             st.markdown(f"""
                             <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
                                 <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{tracto}</div>
                                 <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge} {f'({placas})' if placas else ''}</div>
+                                {note_html}
                             </div>
                             """, unsafe_allow_html=True)
                         with cc_btn:
@@ -2328,35 +2504,56 @@ if st.session_state.menu_actual == "MODO_TV":
                                 new_disp = 'NO' if disp == 'SI' else 'SI'
                                 run_query("UPDATE camiones SET disponible = ? WHERE tracto = ?", (new_disp, tracto))
                                 st.rerun()
+                        with cc_note:
+                            if st.button("📝", key=f"tv_nav_note_cam_{tracto}", use_container_width=True):
+                                popup_editar_nota("camiones", "tracto", tracto, nota)
 
             # 3. Cajas
             with col3:
                 st.markdown("#### 📦 Cajas")
-                df_cj = pd.read_sql_query("SELECT caja, disponible FROM cajas ORDER BY caja ASC", get_connection())
+                df_cj = pd.read_sql_query("SELECT caja, disponible, nota FROM cajas", get_connection())
                 cajas_ocupadas = get_cajas_ocupados_hoy()
                 if df_cj.empty:
                     st.info("No hay cajas registradas.")
                 else:
+                    # Calcular Estado y Prioridad para ordenar
+                    def get_caj_state_priority(r):
+                        cj = r['caja']
+                        disp = r['disponible']
+                        if cj and cj.upper() in cajas_ocupadas:
+                            return "🔴 EN VIAJE", 0
+                        elif disp == 'NO':
+                            return "🟡 NO DISPONIBLE", 1
+                        else:
+                            return "🟢 DISPONIBLE", 2
+                            
+                    states_priorities = df_cj.apply(get_caj_state_priority, axis=1)
+                    df_cj['Estado'] = [sp[0] for sp in states_priorities]
+                    df_cj['Prioridad'] = [sp[1] for sp in states_priorities]
+                    df_cj = df_cj.sort_values(by=['Prioridad', 'caja'], ascending=[True, True])
+                    
                     for idx, row in df_cj.iterrows():
                         caja = row['caja']
                         disp = row['disponible']
+                        badge = row['Estado']
+                        nota = row.get('nota', '') or ''
                         
-                        if caja and caja.upper() in cajas_ocupadas:
+                        if badge == "🔴 EN VIAJE":
                             bg, txt, border = "rgba(239, 68, 68, 0.15)", "#fca5a5", "rgba(239, 68, 68, 0.35)"
-                            badge = "🔴 EN VIAJE"
-                        elif disp == 'NO':
+                        elif badge == "🟡 NO DISPONIBLE":
                             bg, txt, border = "rgba(245, 158, 11, 0.15)", "#fcd34d", "rgba(245, 158, 11, 0.35)"
-                            badge = "🟡 NO DISPONIBLE"
                         else:
                             bg, txt, border = "rgba(16, 185, 129, 0.15)", "#6ee7b7", "rgba(16, 185, 129, 0.35)"
-                            badge = "🟢 DISPONIBLE"
                             
-                        cc_card, cc_btn = st.columns([3.5, 1.5])
+                        note_html = f"""<div style="font-size: 11px; font-style: italic; opacity: 0.85; margin-top: 4px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 4px; word-wrap: break-word;">📝 {nota}</div>""" if nota else ""
+                        
+                        cc_card, cc_btn, cc_note = st.columns([3.2, 1.1, 0.7])
                         with cc_card:
                             st.markdown(f"""
                             <div style="background-color: {bg}; color: {txt}; padding: 12px 15px; border-radius: 10px; border: 1px solid {border}; display: flex; flex-direction: column; justify-content: center; min-height: 48px; margin-bottom: 8px;">
                                 <div style="font-weight: 700; text-transform: uppercase; font-size:14px;">{caja}</div>
                                 <div style="font-size: 11px; font-weight: bold; opacity: 0.9; margin-top:2px;">{badge}</div>
+                                {note_html}
                             </div>
                             """, unsafe_allow_html=True)
                         with cc_btn:
@@ -2365,6 +2562,9 @@ if st.session_state.menu_actual == "MODO_TV":
                                 new_disp = 'NO' if disp == 'SI' else 'SI'
                                 run_query("UPDATE cajas SET disponible = ? WHERE caja = ?", (new_disp, caja))
                                 st.rerun()
+                        with cc_note:
+                            if st.button("📝", key=f"tv_nav_note_caj_{caja}", use_container_width=True):
+                                popup_editar_nota("cajas", "caja", caja, nota)
         render_tv_disponibilidad_nav()
 
 # ==============================================================================
